@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Keyflow MIDI Studio
+Comment=Practice, play, record, and read piano music
+Exec=keyflow
+Icon=org.keyflow.Studio
+Terminal=false
+Categories=AudioVideo;Audio;Music;Education;
+Keywords=MIDI;Piano;Sheet Music;Practice;Notation;
+StartupWMClass=Keyflow
+

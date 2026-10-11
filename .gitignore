@@ -1,0 +1,21 @@
+# Local CMake build trees
+/build/
+/build-*/
+/cmake-build-*/
+
+# Generated media, exports, and scratch work
+/tmp/
+/outputs/
+/dist/
+/work/
+
+# Python bytecode and caches
+**/__pycache__/
+*.py[cod]
+
+# Local IDE and Codex workspace state
+/.agents/
+/.codex/
+CMakeUserPresets.json
+*.user
+*.autosave
