@@ -20,6 +20,7 @@ signals:
     void noteOn(int note, int velocity);
     void noteOff(int note);
     void sustain(bool down);
+    void programChanged(int program);
     void devicesChanged(const QStringList &devices);
     void midiError(const QString &message);
 
@@ -48,6 +49,8 @@ public:
     void noteOn(int note, int velocity = 96);
     void noteOff(int note);
     void sustain(bool down);
+    void programChange(int program);
+    void channelVolume(int value);
     void allNotesOff();
 
 private:

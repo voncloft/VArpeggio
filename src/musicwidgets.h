@@ -17,6 +17,7 @@ public:
     void setFollowBeat(double beat);
     void setLiveWritingMode(bool live);
     void setEditEnabled(bool enabled);
+    void setSeekEnabled(bool enabled);
     void setEditCursorBeat(double beat);
     void setTimeSignatures(const QVector<TimeSignatureEvent> &signatures);
     void setKeySignatures(const QVector<KeySignatureEvent> &signatures);
@@ -33,10 +34,14 @@ signals:
     void noteContextRequested(int noteIndex, const QPoint &globalPosition);
     void restDeleteRequested(int restIndex);
     void staffContextRequested(double beat, const QPoint &globalPosition);
+    void seekPreviewChanged(double beat);
+    void seekRequested(double beat);
 
 protected:
     void paintEvent(QPaintEvent *) override;
     void mousePressEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
 
 private:
     QPair<double,double> viewRange() const;
@@ -52,6 +57,11 @@ private:
     bool m_showNames = false;
     bool m_liveWriting = false;
     bool m_editEnabled = false;
+    bool m_seekEnabled = true;
+    bool m_seekDragging = false;
+    double m_seekPreviewBeat = -1;
+    double m_seekRangeStart = 0;
+    double m_seekRangeWindow = 8;
     double m_editCursorBeat = -1;
     int m_handFilter = -1;
 };

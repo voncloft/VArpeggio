@@ -99,6 +99,7 @@ void MidiInput::run(){
                     if(command==0x90){if(input.data[1])emit noteOn(input.data[0],input.data[1]);else emit noteOff(input.data[0]);}
                     else if(command==0x80)emit noteOff(input.data[0]);
                     else if(command==0xb0&&input.data[0]==64)emit sustain(input.data[1]>=64);
+                    else if(command==0xc0)emit programChanged(input.data[0]);
                     input.have=0;
                 }
             }
@@ -109,7 +110,7 @@ void MidiInput::run(){
     }
     snd_seq_set_client_name(seq,"Keyflow MIDI Studio");int port=snd_seq_create_simple_port(seq,"Keyboard input",SND_SEQ_PORT_CAP_WRITE|SND_SEQ_PORT_CAP_SUBS_WRITE,SND_SEQ_PORT_TYPE_APPLICATION);if(port<0){snd_seq_close(seq);emit midiError("Could not create the MIDI input port.");return;}
     m_running=true;QSet<QString>connected;auto scan=[&](){QStringList names;snd_seq_client_info_t*cinfo;snd_seq_port_info_t*pinfo;snd_seq_client_info_alloca(&cinfo);snd_seq_port_info_alloca(&pinfo);snd_seq_client_info_set_client(cinfo,-1);while(snd_seq_query_next_client(seq,cinfo)>=0){int client=snd_seq_client_info_get_client(cinfo);if(client==snd_seq_client_id(seq))continue;snd_seq_port_info_set_client(pinfo,client);snd_seq_port_info_set_port(pinfo,-1);while(snd_seq_query_next_port(seq,pinfo)>=0){unsigned cap=snd_seq_port_info_get_capability(pinfo);if((cap&SND_SEQ_PORT_CAP_READ)&&(cap&SND_SEQ_PORT_CAP_SUBS_READ)){int source=snd_seq_port_info_get_port(pinfo);QString key=QString::number(client)+":"+QString::number(source);QString name=QString::fromLocal8Bit(snd_seq_client_info_get_name(cinfo))+" — "+QString::fromLocal8Bit(snd_seq_port_info_get_name(pinfo));names<<name;if(!connected.contains(key)&&snd_seq_connect_from(seq,port,client,source)>=0)connected.insert(key);}}}names.removeDuplicates();names.sort();{QMutexLocker lock(&m_mutex);if(names!=m_devices){m_devices=names;emit devicesChanged(names);}}};
-    int counter=0;scan();while(m_running){snd_seq_event_t*ev=nullptr;while(snd_seq_event_input(seq,&ev)>=0&&ev){switch(ev->type){case SND_SEQ_EVENT_NOTEON:if(ev->data.note.velocity)emit noteOn(ev->data.note.note,ev->data.note.velocity);else emit noteOff(ev->data.note.note);break;case SND_SEQ_EVENT_NOTEOFF:emit noteOff(ev->data.note.note);break;case SND_SEQ_EVENT_CONTROLLER:if(ev->data.control.param==64)emit sustain(ev->data.control.value>=64);break;default:break;}snd_seq_free_event(ev);ev=nullptr;}if(++counter>=1000){scan();counter=0;}msleep(2);}snd_seq_close(seq);
+    int counter=0;scan();while(m_running){snd_seq_event_t*ev=nullptr;while(snd_seq_event_input(seq,&ev)>=0&&ev){switch(ev->type){case SND_SEQ_EVENT_NOTEON:if(ev->data.note.velocity)emit noteOn(ev->data.note.note,ev->data.note.velocity);else emit noteOff(ev->data.note.note);break;case SND_SEQ_EVENT_NOTEOFF:emit noteOff(ev->data.note.note);break;case SND_SEQ_EVENT_CONTROLLER:if(ev->data.control.param==64)emit sustain(ev->data.control.value>=64);break;case SND_SEQ_EVENT_PGMCHANGE:emit programChanged(ev->data.control.value);break;default:break;}snd_seq_free_event(ev);ev=nullptr;}if(++counter>=1000){scan();counter=0;}msleep(2);}snd_seq_close(seq);
 }
 
 MidiOutput::MidiOutput(QObject *parent):QObject(parent){}
@@ -159,4 +160,6 @@ void MidiOutput::sendMessage(quint8 status,quint8 data1,quint8 data2,int length)
 void MidiOutput::noteOn(int note,int velocity){sendMessage(0x90,quint8(qBound(0,note,127)),quint8(qBound(1,velocity,127)));}
 void MidiOutput::noteOff(int note){sendMessage(0x80,quint8(qBound(0,note,127)),0);}
 void MidiOutput::sustain(bool down){sendMessage(0xb0,64,down?127:0);}
+void MidiOutput::programChange(int program){sendMessage(0xc0,quint8(qBound(0,program,127)),0,2);}
+void MidiOutput::channelVolume(int value){sendMessage(0xb0,7,quint8(qBound(0,value,127)));}
 void MidiOutput::allNotesOff(){sendMessage(0xb0,64,0);sendMessage(0xb0,123,0);}

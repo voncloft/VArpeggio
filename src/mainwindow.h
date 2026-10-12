@@ -85,7 +85,8 @@ private:
     void playbackNoteOn(int index);
     void playbackNoteOff(int index);
     void togglePlayback();
-    void pauseSourcePlayback();
+    void pausePlayback();
+    void seekPlayback(double beat);
     void stopPlayback(bool rewind = false);
     bool useImportedMediaAudio() const;
     void clearImportedMediaSource();
@@ -146,6 +147,7 @@ private:
     QSet<int> m_endedEvents;
     QSet<int> m_earExpected;
     QHash<int,int> m_midiOutputNotes;
+    QSet<int> m_liveMidiOutputNotes;
     QHash<int,double> m_recordStarts;
     QHash<int,double> m_freePlayStarts;
     QHash<int,int> m_freePlayIndexes;
@@ -208,6 +210,7 @@ private:
     QLabel *m_noticeText = nullptr;
     QComboBox *m_exportCombo = nullptr;
     QComboBox *m_instrumentCombo = nullptr;
+    QComboBox *m_keyboardToneCombo = nullptr;
     QCheckBox *m_sourceAudio = nullptr;
     QPushButton *m_detectorButton = nullptr;
     QCheckBox *m_noteNames = nullptr;
