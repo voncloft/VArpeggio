@@ -172,7 +172,7 @@ int main(int argc, char **argv) {
     // The no-sample fallback must obey the same duration contract. It used
     // to compact a still-held sequenced voice after its natural gain became
     // small, causing a literal early cutoff on long notes.
-    qputenv("KEYFLOW_DISABLE_PIANO_SAMPLES","1");
+    qputenv("VARPEGGIO_DISABLE_PIANO_SAMPLES","1");
     SynthStream fallbackHold;
     fallbackHold.startSequence({{60,0,16,104,Hand::Right}},120);
     const auto fallbackAttack=render(fallbackHold,24000);
@@ -182,7 +182,7 @@ int main(int argc, char **argv) {
     const auto fallbackRelease=render(fallbackHold,96000);
     ok &= check(rms(fallbackRelease,fallbackRelease.size()-24000)<.001,
                 "fallback long note stops after its endpoint");
-    qunsetenv("KEYFLOW_DISABLE_PIANO_SAMPLES");
+    qunsetenv("VARPEGGIO_DISABLE_PIANO_SAMPLES");
 
     // A held acoustic-piano key should naturally fade. The previous oscillator
     // stayed at one level and sounded like a church organ.
@@ -233,6 +233,6 @@ int main(int argc, char **argv) {
     ok &= check(std::abs(muted.last()) < .0001f, "mute uses a short fade and reaches silence");
 
     if (!ok) return 1;
-    std::cout << "All Keyflow synthesizer tests passed.\n";
+    std::cout << "All VArpeggio synthesizer tests passed.\n";
     return 0;
 }

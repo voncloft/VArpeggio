@@ -1,6 +1,6 @@
-# Keyflow open-source component notice
+# VArpeggio open-source component notice
 
-Keyflow-specific source code remains separate from the following open-source components. No closed-source piano library or proprietary optical-recognition engine is intentionally bundled.
+VArpeggio-specific source code remains separate from the following open-source components. No closed-source piano library or proprietary optical-recognition engine is intentionally bundled.
 
 ## Bundled data
 
@@ -10,13 +10,9 @@ Keyflow-specific source code remains separate from the following open-source com
 
 - **Verovio 6.3.0** — music-notation engraving library and Python binding, **LGPL-3.0-only**. The bundled wheel metadata and complete GPL/LGPL license texts are under `tools/python/verovio-6.3.0.dist-info/`. Source: <https://github.com/rism-digital/verovio>
 
-## Optional separately launched runtime
-
-- **Audiveris** — optical music recognition, **GNU AGPL 3.0**. Keyflow launches the unmodified Audiveris executable as a separate process and reads its exported MusicXML. A portable Keyflow distribution that includes Audiveris must also include Audiveris's copyright/license notice and a corresponding-source location for that exact build. Source: <https://github.com/Audiveris/audiveris>
-
 ## Linked frameworks and system libraries
 
-- **Qt 6** — LGPL/GPL/commercial multi-license; Keyflow dynamically links the system Qt libraries. Source: <https://code.qt.io/>
+- **Qt 6** — LGPL/GPL/commercial multi-license; VArpeggio dynamically links the system Qt libraries. Source: <https://code.qt.io/>
 - **OpenCV** — Apache License 2.0. Source: <https://github.com/opencv/opencv>
 - **libsndfile** — LGPL 2.1. Source: <https://github.com/libsndfile/libsndfile>
 - **ALSA library** — LGPL 2.1 or later. Source: <https://github.com/alsa-project/alsa-lib>
@@ -24,9 +20,10 @@ Keyflow-specific source code remains separate from the following open-source com
 
 ## Separately executed system tools
 
-- **FFmpeg** — LGPL/GPL depending on the particular system build. Keyflow invokes the user's installed executable for local media conversion. Source: <https://ffmpeg.org/>
-- **Poppler `pdfdetach`** — GPL. Keyflow invokes the user's installed executable to inspect PDF attachments. Source: <https://poppler.freedesktop.org/>
+- **FFmpeg** — LGPL/GPL depending on the particular system build. VArpeggio invokes the user's installed executable for local media conversion. Source: <https://ffmpeg.org/>
+- **Poppler `pdfdetach`** — GPL. VArpeggio invokes the user's installed executable to inspect PDF attachments. Source: <https://poppler.freedesktop.org/>
+- **Audiveris** — optional optical music recognition, **GNU AGPL 3.0**. VArpeggio can install the official Flathub package for the current user or download and unpack the official Linux release from GitHub into its per-user data folder. It launches the unmodified executable as a separate process and imports its MusicXML output. It is not required because VArpeggio retains a native fallback reader. Source and license: <https://github.com/Audiveris/audiveris>
 
-The Apache-2.0 LumaChords project informed the general falling-note validation approach; its source code and assets are not included in Keyflow. Source: <https://github.com/adalkiran/lumachords>
+The Apache-2.0 LumaChords project informed the general falling-note validation approach; its source code and assets are not included in VArpeggio. Source: <https://github.com/adalkiran/lumachords>
 
 This inventory is intended to make redistribution review straightforward; it is not legal advice.

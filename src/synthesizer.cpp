@@ -68,7 +68,10 @@ std::shared_ptr<const RecordedPianoLibrary> loadRecordedPiano(){
     static std::weak_ptr<const RecordedPianoLibrary> cache;
     QMutexLocker cacheLock(&cacheMutex);
     if(const auto existing=cache.lock())return existing;
-    const QString root=QDir(QCoreApplication::applicationDirPath()).filePath("soundfonts/UprightPianoKW");
+    QString root=QDir(QCoreApplication::applicationDirPath()).filePath("soundfonts/UprightPianoKW");
+#ifdef VARPEGGIO_DATADIR
+    if(!QFileInfo::exists(root))root=QDir(QCoreApplication::applicationDirPath()).absoluteFilePath("../"+QStringLiteral(VARPEGGIO_DATADIR)+"/soundfonts/UprightPianoKW");
+#endif
     QFile mapping(QDir(root).filePath("UprightPianoKW-20220221.sfz"));
     if(!mapping.open(QIODevice::ReadOnly|QIODevice::Text))return {};
     auto library=std::make_shared<RecordedPianoLibrary>();
@@ -135,8 +138,8 @@ double sequencePedalTail(SynthInstrument instrument) {
 SynthStream::SynthStream(QObject *parent) : QIODevice(parent) {
     for(int i=0;i<=kWaveTableSize;++i)m_sineTable[i]=float(std::sin(2.0*M_PI*i/kWaveTableSize));
     // Keep the old variable as a compatibility alias for older test scripts.
-    const bool samplesDisabled=qEnvironmentVariableIsSet("KEYFLOW_DISABLE_PIANO_SAMPLES")
-                               ||qEnvironmentVariableIsSet("KEYFLOW_DISABLE_SOUNDFONT");
+    const bool samplesDisabled=qEnvironmentVariableIsSet("VARPEGGIO_DISABLE_PIANO_SAMPLES")
+                               ||qEnvironmentVariableIsSet("VARPEGGIO_DISABLE_SOUNDFONT");
     if(!samplesDisabled)m_recordedPiano=loadRecordedPiano();
     open(QIODevice::ReadOnly);
 }
@@ -396,7 +399,7 @@ qint64 SynthStream::readData(char *data, qint64 maxlen) {
 }
 
 Synthesizer::Synthesizer(QObject *parent) : QObject(parent), m_stream(this) {
-    if (qEnvironmentVariableIsSet("KEYFLOW_NO_AUDIO")) return;
+    if (qEnvironmentVariableIsSet("VARPEGGIO_NO_AUDIO")) return;
     QAudioDevice device=QMediaDevices::defaultAudioOutput();QAudioFormat format;format.setSampleRate(device.preferredFormat().sampleRate());format.setChannelCount(2);format.setSampleFormat(QAudioFormat::Float);
     if(!device.isFormatSupported(format)){format.setSampleRate(48000);if(!device.isFormatSupported(format))return;}
     m_stream.setOutputSampleRate(format.sampleRate());

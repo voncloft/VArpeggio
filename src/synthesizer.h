@@ -89,7 +89,7 @@ private:
     double m_lastOutputRight = 0.0;
     double m_polyphonyGain = .82;
     // The bundled piano samples are nearly mono.  A real sampled grand (and
-    // the tutorial soundtracks Keyflow is matching) has different early
+    // the tutorial soundtracks VArpeggio is matching) has different early
     // reflections at the two microphones.  Keep a short, bounded ambience
     // line here; it adds piano width and continuity without a long hall tail.
     static constexpr int kPianoRoomFrames = 4096;

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create properly measured MusicXML and an engraved PDF from Keyflow notes."""
+"""Create properly measured MusicXML and an engraved PDF from VArpeggio notes."""
 
 from __future__ import annotations
 
@@ -261,7 +261,7 @@ def measure_plan(project: dict, last_tick: int) -> list[MeasurePlan]:
 
 
 def build_musicxml(project: dict) -> str:
-    title = html.escape(str(project.get("title") or "Keyflow transcription"))
+    title = html.escape(str(project.get("title") or "VArpeggio transcription"))
     tempo = max(30, min(260, int(project.get("tempo") or 96)))
     voices = allocate_voices(project["notes"])
     endpoints = [round((float(note["start"]) + float(note["duration"])) * DIVISIONS) for note in project["notes"]]
@@ -323,7 +323,7 @@ def build_musicxml(project: dict) -> str:
         '<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" '
         '"http://www.musicxml.org/dtds/partwise.dtd">\n'
         f'<score-partwise version="4.0"><work><work-title>{title}</work-title></work>'
-        '<identification><encoding><software>Keyflow detailed video transcription</software></encoding></identification>'
+        '<identification><encoding><software>VArpeggio detailed video transcription</software></encoding></identification>'
         '<part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list>'
         f'<part id="P1">{"".join(measures)}</part></score-partwise>\n'
     )
@@ -337,7 +337,7 @@ def render_pdf(musicxml: Path, project: Path, output: Path) -> None:
         import verovio  # type: ignore
     except ImportError as exc:
         raise RuntimeError("The bundled Verovio score engraver is missing.") from exc
-    with tempfile.TemporaryDirectory(prefix="keyflow-score-") as directory:
+    with tempfile.TemporaryDirectory(prefix="varpeggio-score-") as directory:
         temp = Path(directory)
         toolkit = verovio.toolkit()
         toolkit.setOptions({
@@ -362,7 +362,7 @@ def render_pdf(musicxml: Path, project: Path, output: Path) -> None:
             pdf_pages.append(page_pdf)
         merged = temp / "engraved-score.pdf"
         subprocess.run(["pdfunite", *map(str, pdf_pages), str(merged)], check=True)
-        # Preserve Keyflow's playable-PDF behavior while using Verovio's exact
+        # Preserve VArpeggio's playable-PDF behavior while using Verovio's exact
         # notation engraving for the visible pages.
         output.unlink(missing_ok=True)
         subprocess.run(["pdfattach", str(merged), str(project), str(output)], check=True)

@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "pdfrecognizer.h"
 #include "synthesizer.h"
 
 #include <QApplication>
@@ -20,9 +21,9 @@ static QIcon makeIcon() {
 }
 
 int main(int argc,char*argv[]){
-    QApplication app(argc,argv);app.setApplicationName("Keyflow");app.setApplicationDisplayName("Keyflow MIDI Studio");app.setOrganizationName("Keyflow");app.setDesktopFileName("org.keyflow.Studio");app.setWindowIcon(makeIcon());
+    QApplication app(argc,argv);app.setApplicationName("VArpeggio");app.setApplicationDisplayName("VArpeggio");app.setOrganizationName("Voncloft");app.setOrganizationDomain("voncloft.com");app.setDesktopFileName("com.voncloft.VArpeggio");app.setWindowIcon(makeIcon());
     const QStringList args=app.arguments();const int shot=args.indexOf("--screenshot");const int open=args.indexOf("--open");const int importVideo=args.indexOf("--import-video");
-    const int transcribe=args.indexOf("--transcribe-falling");const int transcribeAudio=args.indexOf("--transcribe-audio");const int estimateTempo=args.indexOf("--estimate-tempo");const int renderWav=args.indexOf("--render-wav");const int renderVideo=args.indexOf("--render-video");const int renderDetector=args.indexOf("--render-detector");const int scoreShot=args.indexOf("--score-screenshot");
+    const int transcribe=args.indexOf("--transcribe-falling");const int transcribeAudio=args.indexOf("--transcribe-audio");const int transcribePdf=args.indexOf("--transcribe-pdf");const int estimateTempo=args.indexOf("--estimate-tempo");const int renderWav=args.indexOf("--render-wav");const int renderVideo=args.indexOf("--render-video");const int renderDetector=args.indexOf("--render-detector");const int scoreShot=args.indexOf("--score-screenshot");
     if(scoreShot>=0&&scoreShot+2<args.size()){
         QVector<NoteEvent> notes;QString title,error;int tempo=96;
         if(!MusicDocument::importFile(args[scoreShot+1],notes,title,tempo,&error)){fprintf(stderr,"%s\n",error.toLocal8Bit().constData());return 2;}
@@ -87,6 +88,20 @@ int main(int argc,char*argv[]){
             fprintf(stderr,"%s\n",error.toLocal8Bit().constData());return 4;
         }
         fprintf(stderr,"Created %lld sound-detected notes plus MIDI, detailed MusicXML, and playable PDF at %d BPM%s.\n",qint64(notes.size()),tempo,info.tempoEstimated?" (estimated)":"");return 0;
+    }
+    if(transcribePdf>=0&&transcribePdf+2<args.size()){
+        const QString input=args[transcribePdf+1],output=args[transcribePdf+2];
+        const PdfRecognitionResult recognized=PdfRecognizer::recognize(input,96,[](int p){fprintf(stderr,"Native PDF recognition: %d%%\n",p);});
+        if(recognized.notes.isEmpty()){fprintf(stderr,"%s\n",recognized.error.toLocal8Bit().constData());return 2;}
+        QString error;const QString title=QFileInfo(input).completeBaseName();
+        if(!MusicDocument::saveJson(output,recognized.notes,recognized.tempo,title,&error,recognized.timeSignatures,{},recognized.keySignatures,{})){
+            fprintf(stderr,"%s\n",error.toLocal8Bit().constData());return 3;
+        }
+        const QFileInfo target(output);const QString xml=target.dir().filePath(target.completeBaseName()+".musicxml");
+        if(!MusicDocument::saveEngravedScore(xml,{},recognized.notes,recognized.tempo,title,&error,recognized.timeSignatures,{},recognized.keySignatures,{})){
+            fprintf(stderr,"%s\n",error.toLocal8Bit().constData());return 4;
+        }
+        fprintf(stderr,"Recognized %lld notes in %d staff systems without an external OMR program.\n",qint64(recognized.notes.size()),recognized.staffSystems);return 0;
     }
     if(transcribe>=0&&transcribe+2<args.size()){
         int tempoHint=0;if(transcribe+3<args.size()&&!args[transcribe+3].startsWith("--")){bool valid=false;const int requested=args[transcribe+3].toInt(&valid);if(!valid){fprintf(stderr,"The optional BPM must be a number.\n");return 64;}tempoHint=qBound(30,requested,260);}

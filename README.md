@@ -1,49 +1,143 @@
-# Keyflow MIDI Studio
+# VArpeggio
 
-Keyflow is a native Qt 6 desktop application for KDE. It connects directly to ALSA MIDI keyboards and provides:
+VArpeggio is a native Qt 6 piano practice, performance, recording, and notation application for KDE/Linux. It was created by Voncloft for learning with a real MIDI keyboard, playing or editing a grand staff, and turning supported score and media formats into practice material.
 
-- strict chord-aware Wait mode, separate Listen playback, tempo-following Play Along, and Free Play with optional recording;
-- right hand, left hand, and hands-together practice;
-- grand-staff notation with optional note names, a virtual piano, and falling-note bubbles;
-- one-flow daily scale, chord, ear-training, and repertoire routines;
-- MIDI, MusicXML, ABC, Keyflow project, and PDF import;
-- MIDI, MusicXML, ABC, WAV, MP4 falling-note visualization, SVG, PNG, PDF, JSON/Keyflow, and CSV export;
-- offline polyphonic piano transcription from local audio or a video's sound;
-- detailed visual transcription of falling-note/bubble videos with full, cropped, 53-, 61-, 88-, or other visible keyboard ranges, including chords, changing highlight colors, both staves, binary and triplet timing, MusicXML, and engraved playable PDF output.
+## Main features
 
-**Wait mode does not run a clock or advance by itself.** It advances only after the correct key or complete chord is played. **Listen** is a separate mode that plays without requiring keyboard input. After audio or video transcription, Listen defaults to the generated piano notes represented in Live follow. **Hear original recording (reference only)**, directly under the song title, switches to the untouched source only when explicitly selected; it stays off by default because source audio may contain notes the draft did not capture. The volume slider has a fixed position and controls either playback source without waiting for the GUI playback timer. Score playback and live keys use direct playback of the bundled CC0 FreePats Kawai upright recordings, with natural, bright, and soft velocity-layer choices. No SoundFont synthesizer is used. WAV export uses the same recorded-piano path selected in the GUI.
+- **Wait mode:** playback advances only after the correct key or complete chord is played.
+- **Listen:** plays the generated notes represented on the live staff without requiring keyboard input.
+- **Play Along:** follows the score clock while showing the current notes, keyboard keys, and falling-note display.
+- **Free Play:** immediately displays played notes on the grand staff, full 88-key keyboard, and optional falling-note view. Recording is optional.
+- **Daily practice:** dated routines for scales, chords, separate hands, hands together, repertoire, and ear training, with previous/next navigation.
+- **Ear training:** plays a hidden note or chord for the player to identify on a MIDI, computer, or onscreen keyboard.
+- **Full score display:** treble and bass staves, chords, beams, accidentals, rests, key and time signatures, repeats, ties, ledger lines, and MIDI pitches 21–108.
+- **MIDI input and output:** receives notes from ALSA MIDI keyboards and can send playback, tone selection, and volume messages to compatible hardware.
+- **Metronome:** optional audible beat during supported practice and playback modes.
+- **Recorded piano playback:** uses the bundled CC0 FreePats Kawai upright recordings with natural, bright, and soft profiles instead of a simple oscillator.
 
-The BPM value is directly editable from 30–260 as well as adjustable with −/+. Changing it during Listen or Play Along keeps the same musical position and retimes the generated piano, moving live staff, falling notes, keyboard highlights, and metronome as one clock. When **Hear original recording** is selected, the reference playback rate changes too. The Note Flow and Live Coach cards have fixed geometry so note or chord changes cannot resize that row. **Tutorial grand** is the default bright, wide piano profile for imported falling-note songs. Saving **Falling-note video (.mp4)** renders the generated staff notes and that selected piano into a full 88-key tutorial animation; it never hides the original recording inside the export.
+## Score import and export
 
-In **Free Play**, every played key appears immediately on the grand staff, falling-note view, and full keyboard. A held note grows and changes from a short value through quarter, half, whole, and tied sustain notation while the key is still down. Click the staff to place the orange insertion line, then play a key or chord to insert it there; the line advances by the longest held note. Right-click a note for Delete or Automatic/♮/♯/♭ notation. Right-click empty staff to insert treble or bass rests, change the time signature, change the key signature (including F major / one flat for B♭), or add/remove a repeat end `:||`. The live staff keeps writing space ahead of the newest note, and its Earlier–Latest scrollbar reviews older notes. **Preview score** plays the actual notes on the editable staff. Recording remains optional, **Clear staff** removes the score after confirmation, and top-right Save exports the current Free Play notation; MusicXML, PDF, and Keyflow project exports retain its meter, key, repeat, rest extent, and accidental data. The daily plan stays open above the score with Previous and Next controls. Its ear-training step plays a hidden note, and every third round plays a hidden major or minor chord; use **Hear again** as often as needed, then find the sound on the MIDI, computer, or onscreen keyboard. A correct answer is revealed on the grand staff.
+VArpeggio imports:
 
-For a tutorial, choose **Video → notes** and leave **Automatic (recommended)** selected. No BPM guess is required. Keyflow analyzes the complete recording, estimates tempo from the extracted soundtrack, measures the white-key spacing and black-key pattern of the keyboard actually shown, finds the keyboard's real bottom even when the video is letterboxed, and maps the visible range to piano pitches. Its primary visual pass now detects complete falling rectangles across the note-rain area and gives each rectangle a persistent identity before it reaches the keyboard. The lower edge crossing a clean play line becomes note-on and the upper edge becomes note-off, so bar height supplies the full held duration and two vertically separated bars on the same key remain two attacks. New tracks are admitted only high above the decorative strike effects, and brief occlusions are carried forward using the measured fall speed. Two-colour bars are grouped by hue for left/right staff assignment. Key-surface and multi-row scans remain fallback candidates. Every viable result is rendered back from the generated notes and checked against the original soundtrack for octave-resolved pitch and timing; audio validates the visual extraction rather than replacing it. False notes over a silent outro are removed and playback dynamics are derived from the source before the best credible draft is kept. If the picture is hidden or too sparse to trust, Automatic mode analyzes the soundtrack instead. You can also force **Highlighted keyboard only** or **Soundtrack only**.
+- MIDI (`.mid`, `.midi`)
+- MusicXML (`.musicxml`, `.mxl`, `.xml`)
+- ABC notation (`.abc`)
+- VArpeggio projects (`.varpeggio`, JSON format)
+- playable VArpeggio PDFs and ordinary engraved PDFs (`.pdf`)
 
-The full-rectangle tracking design was informed by the Apache-2.0-licensed [LumaChords](https://github.com/adalkiran/lumachords) project. Keyflow keeps its own C++/Qt implementation, keyboard calibration, source-audio validation, dynamics, notation, and KDE interface.
+VArpeggio exports:
 
-This is a verification loop, not a guarantee of exact transcription: it can reject a worse visual draft and retain a better one, but it cannot prove every note is correct. Soundtrack-only conversion remains experimental. Clean solo piano works best; vocals, drums, effects, and dense backing tracks can add or hide detected pitches. The current offline audio path extracts the complete soundtrack and analyzes piano-like frequencies; it does not isolate a piano stem or run a neural source-separation model. Longer recordings take proportionally longer because Keyflow no longer stops after five minutes.
+- MIDI, MusicXML, ABC, and VArpeggio projects
+- engraved PDF, SVG, and PNG scores
+- WAV piano audio
+- MP4 falling-note piano videos
+- CSV note data
 
-Playable PDFs and generated transcriptions provide two score views: **Exact PDF** keeps the page-perfect engraving, while **Live follow** shows a readable practice window with a moving play line. Notes that begin together stay grouped as chords with one stem, short-note runs are beamed together, and long notes show curved ties through their full sounding span. Coral dots at the play line mark notes that are still being held. The live grand staff includes the full MIDI 21–108 piano range so extreme notes cannot sound off-screen. Live follow advances only after the complete correct note or chord in Wait mode, and follows the clock in Listen and Play Along. Playback updates the keyboard and coach only when the active note group changes, so their layout stays still while the score moves.
+VArpeggio-generated PDFs carry editable note data as an attachment. Reopening one restores its playback and practice data while preserving the exact page under **Exact PDF**.
 
-PDFs exported by Keyflow contain the note data as an attachment. Reopening one in Keyflow restores playback and practice. When a plain engraved PDF has no attached or same-name MIDI/MusicXML score, Keyflow now invokes Audiveris optical music recognition, reads its compressed MusicXML result internally, and keeps the original pages under **Exact PDF** while the recognition draft drives Listen, Wait mode, bubbles, and Live follow. Optical recognition is still a draft: scans, unusual engraving, dense voices, accidentals, and complicated rhythms may need manual correction.
+## Free Play and score editing
+
+Every played key appears immediately. A held key grows from a short value into quarter, half, whole, or tied sustain notation while it remains down.
+
+- Click the staff to place the orange insertion line.
+- Play one or more keys to insert notes at that position.
+- Right-click notes to delete them or change their duration or accidental treatment.
+- Right-click empty staff space to insert rests, change the time signature, change the key signature, or add or remove a repeat end.
+- Group mode allows notes entered separately to share one musical position as a chord.
+- Use the Earlier–Latest scrollbar to revisit older measures.
+- **Preview score** plays the actual editable staff.
+- **Clear staff** removes the working score after confirmation.
+- The top-right Save controls export the finished score.
+
+## Plain PDF recognition
+
+When an ordinary PDF has no attached note data or same-name MIDI/MusicXML sidecar, VArpeggio performs optical music recognition:
+
+1. On first use, it looks for an existing Audiveris installation.
+2. If none exists, it installs the official Flathub build for the current user when Flatpak is available. Otherwise, it downloads the official Audiveris Linux release from GitHub and unpacks it into VArpeggio's per-user application-data directory without root access.
+3. Audiveris exports MusicXML, which VArpeggio imports for Live follow, Listen, Wait mode, Play Along, and falling notes.
+4. VArpeggio reads a printed metronome marking such as `quarter note = 101` directly from the PDF when Audiveris omits tempo from its MusicXML.
+5. If Audiveris setup or conversion fails, VArpeggio uses its built-in Qt PDF/OpenCV reader.
+
+The Audiveris runtime is downloaded only once per user and reused for later PDFs. The original PDF always remains available under **Exact PDF**.
+
+Optical recognition is a draft, not a guarantee. Clean, conventionally engraved piano scores work best. Scans, handwriting, unusual engraving, dense voices, missing text layers, and complicated rhythms or accidentals can require correction.
+
+## Audio and falling-note video transcription
+
+Choose **Practice → Video/audio to notes** to transcribe local media.
+
+For falling-note tutorials, Automatic mode analyzes the complete recording, estimates tempo from the soundtrack, finds the visible keyboard geometry, supports cropped and nonstandard 53-, 61-, 88-, or other visible key ranges, tracks complete falling bars, and maps their play-line crossings to note-on and note-off events. Bar height provides held-note duration, and color can help assign left and right hands. Candidate results are rendered back from the generated notes and compared with the source soundtrack.
+
+The full-bar tracking approach was informed by the Apache-2.0-licensed [LumaChords](https://github.com/adalkiran/lumachords) project. VArpeggio has its own C++/Qt implementation, calibration, transcription, audio validation, dynamics, notation, and KDE interface; LumaChords source code and assets are not included.
+
+Soundtrack-only polyphonic transcription remains experimental. Clean solo piano works best. Vocals, drums, effects, and dense backing tracks can hide or introduce detected pitches. VArpeggio does not currently run a neural source-separation model.
+
+**Hear original recording (reference only)** is an optional comparison switch. It does not replace the generated notes used by Listen, Live follow, or export.
+
+## Playback and live display
+
+- The BPM control accepts 30–260 BPM and can be changed while Listen or Play Along is active.
+- Changing BPM retimes generated piano playback, live staff, falling notes, keyboard highlights, and metronome from the same musical position.
+- The orange play line can be dragged to seek in Wait, Listen, and Play Along modes.
+- Playback supports pause, resume, and stop.
+- Live follow advances by measures and keeps the current measure readable instead of shrinking the entire piece onto one line.
+- Long notes remain visible as ties and held-note indicators for their complete sounding duration.
+- Right, Left, and Together filters support separate-hand practice.
 
 ## Build
+
+Required development and runtime components include Qt 6 Core, Widgets, Multimedia, XML, SVG, PDF/PDF Widgets, Concurrent, and Network; ALSA; OpenCV 4; zlib; and libsndfile. Python 3, FFmpeg, Poppler's `pdfdetach`, `rsvg-convert`, `pdfunite`, and `pdfattach` support media and engraved-score workflows. `bsdtar` or Flatpak is used for automatic Audiveris setup.
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
-./build/keyflow
+ctest --test-dir build --output-on-failure
+./build/varpeggio
 ```
 
-Runtime requirements are Qt 6 Widgets, Multimedia, XML, SVG, PDF/PDF Widgets, ALSA, OpenCV, zlib, Poppler's `pdfdetach`, FFmpeg for media transcription, and Audiveris for optical recognition of plain PDFs. The current project build can use an Audiveris runtime placed beside the executable under `audiveris-runtime/`.
+## System installation and packaging
 
-## Open-source components
+For a normal system install:
 
-Keyflow does not intentionally include closed-source or proprietary runtime assets. The bundled Kawai piano recordings are CC0 public domain. Audiveris is an unmodified, separately launched AGPL-3.0 program. Framework and system-tool licenses and source locations are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). GeneralUser GS was removed because its own license disclosed uncertainty about the origin of some contained samples.
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
+cmake --build build -j
+sudo cmake --install build
+```
+
+For a staged `spkgbuild` or another package builder:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
+cmake --build build -j
+DESTDIR="$PKG" cmake --install build
+```
+
+The install layout is:
+
+- `/usr/bin/varpeggio`
+- `/usr/share/applications/com.voncloft.VArpeggio.desktop`
+- `/usr/share/icons/hicolor/scalable/apps/com.voncloft.VArpeggio.svg`
+- `/usr/libexec/varpeggio/` for the private engraving helper and Verovio runtime
+- `/usr/share/varpeggio/` for recorded piano data
+- `/usr/share/doc/varpeggio/` for license notices
+
+Audiveris is not installed into `/usr` by this package. Each user receives a private runtime on the first ordinary-PDF import when one is needed.
 
 ## Keyboard controls
 
 - `A W S E D F T G Y H U J K`: notes from C4 through C5
-- `Space`: listen/stop, or replay the hidden ear-training sound
-- `R`: start/stop optional Free Play recording
-- `Esc`: stop all playback
+- `Space`: Listen/Stop, or replay the hidden ear-training sound
+- `R`: start or stop optional Free Play recording
+- `Esc`: stop playback
+
+## License
+
+Copyright © 2026 Voncloft.
+
+VArpeggio's original source code is released under the **GNU General Public License, version 3**. See [LICENSE](LICENSE).
+
+Bundled data and third-party components retain their own licenses. In particular, the recorded piano is CC0, Verovio is LGPL-3.0-only, and the separately downloaded and launched Audiveris engine is AGPL-3.0. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the complete component inventory and source links.
+
+The VArpeggio and Voncloft names and artwork are not automatically licensed as trademarks by the GPL.

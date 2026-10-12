@@ -8,6 +8,10 @@
 #include <limits>
 
 namespace {
+constexpr double scoreCanvasWidth=1100.0;
+constexpr double scoreCanvasHeight=440.0;
+constexpr double scoreVerticalOffset=60.0;
+
 bool blackKey(int midi){int p=((midi%12)+12)%12;return p==1||p==3||p==6||p==8||p==10;}
 int diatonicIndex(int midi){static const int step[]={0,0,1,1,2,3,3,4,4,5,5,6};return (midi/12-1)*7+step[((midi%12)+12)%12];}
 int fifthsAt(const QVector<KeySignatureEvent>&signatures,double beat){int fifths=0;for(const auto &signature:signatures){if(signature.beat>beat+.001)break;fifths=signature.fifths;}return fifths;}
@@ -88,7 +92,11 @@ void ScoreWidget::paintScore(QPainter &p,const QRectF &target) const {
     // Reserve generous ledger-line space below the bass staff and above the
     // treble staff. Dense piano arrangements regularly extend far beyond the
     // five lines; a 310-unit canvas clipped those legitimate low notes.
-    constexpr double verticalOffset=30.0,canvasWidth=1100.0,canvasHeight=380.0;
+    // A0 through C8, including ledger lines, stems, flags, and accidentals,
+    // must fit inside the existing score panel. The larger internal canvas is
+    // fitted into the same widget, so the surrounding KDE layout does not
+    // grow or crop the extreme ends of an 88-key piano.
+    constexpr double verticalOffset=scoreVerticalOffset,canvasWidth=scoreCanvasWidth,canvasHeight=scoreCanvasHeight;
     // Musical glyphs must retain their proportions.  The old independent X/Y
     // scaling made treble and bass clefs look warped whenever the score card
     // was made taller. Fit one undistorted canvas and center the spare space.
@@ -101,18 +109,33 @@ void ScoreWidget::paintScore(QPainter &p,const QRectF &target) const {
     // Draw clefs in explicit boxes wholly to the right of the opening
     // barline. Point-baseline drawing let the font's negative left bearing
     // leak outside the measure, especially for the treble clef.
-    auto drawClef=[&](const QString &glyph,const QRectF &box){
+    auto drawClef=[&](const QString &glyph,const QRectF &box,const QPointF &musicalAnchor,double registeredScale){
         QFont font("Noto Music",90);if(!QFontInfo(font).exactMatch())font=QFont("serif",90);
         QPainterPath outline;outline.addText(QPointF(0,0),font,glyph);const QRectF bounds=outline.boundingRect();
         if(bounds.isEmpty())return;
         const double fit=qMin(box.width()/bounds.width(),box.height()/bounds.height());
         QTransform transform;transform.translate(box.center().x(),box.center().y());transform.scale(fit,fit);transform.translate(-bounds.center().x(),-bounds.center().y());
-        p.setPen(Qt::NoPen);p.setBrush(QColor("#173f39"));p.drawPath(transform.map(outline));
+        QTransform registration;registration.translate(musicalAnchor.x(),musicalAnchor.y());registration.scale(registeredScale,registeredScale);registration.translate(-musicalAnchor.x(),-musicalAnchor.y());
+        p.setPen(Qt::NoPen);p.setBrush(QColor("#173f39"));p.drawPath(registration.map(transform.map(outline)));
     };
     // One vector path per clef avoids the split/duplicated fragments produced
     // by rectangle-based supplementary-plane text layout on some KDE fonts.
-    drawClef(QString::fromUtf8("𝄞"),QRectF(110,66,58,106));
-    drawClef(QString::fromUtf8("𝄢"),QRectF(110,170,58,72));
+    // These boxes were originally tuned with a 30-unit canvas margin. Move
+    // them only by the additional margin, not by the full offset, so each
+    // clef's musical anchor remains on its staff.
+    constexpr double clefShift=verticalOffset-30.0;
+    // G clef: the spiral is registered on G4, the second treble line from the
+    // bottom. Scaling around that musical anchor keeps font bounds from
+    // moving it away from its line.
+    drawClef(QString::fromUtf8("𝄞"),QRectF(110,66+clefShift,58,106),QPointF(139,100+verticalOffset),.78);
+    // Register the engraved F-clef glyph to musical positions, not its font
+    // baseline. The fitted box keeps its crown at A3 and tail at A2; the
+    // glyph's own two dots then straddle F3 in the G3 and E3 spaces.
+    const double upperA=160+verticalOffset;
+    const double lowerA=195+verticalOffset;
+    constexpr double bassCrownInset=1.5;
+    constexpr double bassTailInset=1.0;
+    drawClef(QString::fromUtf8("𝄢"),QRectF(112,upperA+bassCrownInset,56,lowerA-upperA-bassCrownInset-bassTailInset),QPointF(140,170+verticalOffset),1.0);
     p.setFont(QFont("Manrope",9,QFont::DemiBold));p.setPen(QColor("#71817c"));p.drawText(QPointF(18,92+verticalOffset),"RIGHT");p.drawText(QPointF(25,182+verticalOffset),"LEFT");
     QVector<NoteEvent> visible;for(const auto&n:m_notes)if(included(n,m_handFilter))visible<<n;
     double maxBeat=0;for(const auto&n:visible)maxBeat=qMax(maxBeat,n.start+n.duration);
@@ -150,9 +173,12 @@ void ScoreWidget::paintScore(QPainter &p,const QRectF &target) const {
         const int keyFifths=fifthsAt(m_keySignatures,signature.beat);
         const double keyWidth=qAbs(keyFifths)*8.0;
         p.setPen(QColor("#173f39"));p.setFont(QFont("Noto Serif",18,QFont::Bold));
-        for(double center:{105.0+verticalOffset,195.0+verticalOffset}){
-            p.drawText(QRectF(x+8+keyWidth,center-22,24,18),Qt::AlignCenter,QString::number(signature.beats));
-            p.drawText(QRectF(x+8+keyWidth,center-5,24,18),Qt::AlignCenter,QString::number(signature.beatType));
+        // Each meter fills its own five-line staff: numerator in the upper
+        // half and denominator in the lower half, divided at the middle line.
+        // The former centres were 15 units too low after the canvas expansion.
+        for(double center:{90.0+verticalOffset,180.0+verticalOffset}){
+            p.drawText(QRectF(x+8+keyWidth,center-21,24,21),Qt::AlignCenter,QString::number(signature.beats));
+            p.drawText(QRectF(x+8+keyWidth,center,24,21),Qt::AlignCenter,QString::number(signature.beatType));
         }
     }
     const QVector<int> trebleSharps{77,72,79,74,69,76,71},trebleFlats{71,76,69,74,67,72,65};
@@ -370,8 +396,14 @@ void ScoreWidget::paintScore(QPainter &p,const QRectF &target) const {
     // Ledger lines sit behind the noteheads.
     for(const auto &chord:chords)for(const auto &render:chord.notes){
         const auto &note=*render.event;const double x=render.headX,y=render.y;
-        if((note.hand==Hand::Right&&y>=115+verticalOffset)||(note.hand==Hand::Left&&y<=155+verticalOffset)){
-            p.setPen(QPen(QColor("#52645f"),1.8));const double ledger=(note.hand==Hand::Right?120:150)+verticalOffset;
+        const bool outsideStaff=note.hand==Hand::Right
+            ?(y<=65+verticalOffset||y>=115+verticalOffset)
+            :(y<=155+verticalOffset||y>=205+verticalOffset);
+        if(outsideStaff){
+            p.setPen(QPen(QColor("#52645f"),1.8));
+            const double ledger=note.hand==Hand::Right
+                ?(y<70+verticalOffset?60:120)+verticalOffset
+                :(y<160+verticalOffset?150:210)+verticalOffset;
             const double step=y>ledger?10:-10;
             for(double ly=ledger;(step>0?ly<=y:ly>=y);ly+=step)p.drawLine(QPointF(x-13,ly),QPointF(x+13,ly));
         }
@@ -502,7 +534,9 @@ void ScoreWidget::paintScore(QPainter &p,const QRectF &target) const {
 
 void ScoreWidget::mousePressEvent(QMouseEvent *event){
     if(width()<=0||height()<=0){QWidget::mousePressEvent(event);return;}
-    const double x=event->position().x()*1100.0/width(),y=event->position().y()*310.0/height();
+    const double fit=qMin(width()/scoreCanvasWidth,height()/scoreCanvasHeight);
+    const double insetX=(width()-scoreCanvasWidth*fit)*.5,insetY=(height()-scoreCanvasHeight*fit)*.5;
+    const double x=(event->position().x()-insetX)/fit,y=(event->position().y()-insetY)/fit;
     const auto range=viewRange();const double startBeat=range.first,window=range.second;
     const double musicLeft=225.0+qAbs(fifthsAt(m_keySignatures,startBeat))*8.0,musicRight=1000.0,scale=(musicRight-musicLeft)/window;
     if(!m_editEnabled&&m_seekEnabled&&event->button()==Qt::LeftButton&&x>=musicLeft&&x<=musicRight){
@@ -516,9 +550,9 @@ void ScoreWidget::mousePressEvent(QMouseEvent *event){
     }
     if(event->button()==Qt::RightButton){
         int closest=-1;double closestDistance=std::numeric_limits<double>::max();const int c4=diatonicIndex(60);
-        for(int index=0;index<m_notes.size();++index){const auto &note=m_notes[index];if(!included(note,m_handFilter)||note.start<startBeat-.001||note.start>startBeat+window+.001)continue;const double noteX=musicLeft+(note.start-startBeat)*scale;const int diatonic=staffDiatonicIndex(note.note,fifthsAt(m_keySignatures,note.start),note.accidental);const double noteY=(note.hand==Hand::Left?150-(diatonic-c4)*5:120-(diatonic-c4)*5)+30.0;const double dx=qAbs(x-noteX),dy=qAbs(y-noteY);if(dx<=18&&dy<=13&&dx+dy<closestDistance){closest=index;closestDistance=dx+dy;}}
+        for(int index=0;index<m_notes.size();++index){const auto &note=m_notes[index];if(!included(note,m_handFilter)||note.start<startBeat-.001||note.start>startBeat+window+.001)continue;const double noteX=musicLeft+(note.start-startBeat)*scale;const int diatonic=staffDiatonicIndex(note.note,fifthsAt(m_keySignatures,note.start),note.accidental);const double noteY=(note.hand==Hand::Left?150-(diatonic-c4)*5:120-(diatonic-c4)*5)+scoreVerticalOffset;const double dx=qAbs(x-noteX),dy=qAbs(y-noteY);if(dx<=18&&dy<=13&&dx+dy<closestDistance){closest=index;closestDistance=dx+dy;}}
         if(closest>=0){emit noteContextRequested(closest,event->globalPosition().toPoint());event->accept();return;}
-        int closestRest=-1;closestDistance=std::numeric_limits<double>::max();for(int index=0;index<m_rests.size();++index){const auto &rest=m_rests[index];if(rest.beat<startBeat-.001||rest.beat>startBeat+window+.001)continue;const double restX=musicLeft+(rest.beat-startBeat)*scale,restY=(rest.hand==Hand::Right?90.0:180.0)+30.0;const double dx=qAbs(x-restX),dy=qAbs(y-restY);if(dx<=18&&dy<=18&&dx+dy<closestDistance){closestRest=index;closestDistance=dx+dy;}}
+        int closestRest=-1;closestDistance=std::numeric_limits<double>::max();for(int index=0;index<m_rests.size();++index){const auto &rest=m_rests[index];if(rest.beat<startBeat-.001||rest.beat>startBeat+window+.001)continue;const double restX=musicLeft+(rest.beat-startBeat)*scale,restY=(rest.hand==Hand::Right?90.0:180.0)+scoreVerticalOffset;const double dx=qAbs(x-restX),dy=qAbs(y-restY);if(dx<=18&&dy<=18&&dx+dy<closestDistance){closestRest=index;closestDistance=dx+dy;}}
         if(closestRest>=0){emit restDeleteRequested(closestRest);event->accept();return;}
         if(x>=musicLeft&&x<=musicRight){const double beat=qMax(0.0,qRound((startBeat+(x-musicLeft)/scale)*8.0)/8.0);m_editCursorBeat=beat;update();emit editCursorChanged(beat);emit staffContextRequested(beat,event->globalPosition().toPoint());event->accept();return;}
     }
@@ -527,7 +561,9 @@ void ScoreWidget::mousePressEvent(QMouseEvent *event){
 
 void ScoreWidget::mouseMoveEvent(QMouseEvent *event){
     if(!m_seekDragging||!(event->buttons()&Qt::LeftButton)){QWidget::mouseMoveEvent(event);return;}
-    const double x=event->position().x()*1100.0/qMax(1,width());
+    const double fit=qMin(width()/scoreCanvasWidth,height()/scoreCanvasHeight);
+    const double insetX=(width()-scoreCanvasWidth*fit)*.5;
+    const double x=(event->position().x()-insetX)/fit;
     const double musicLeft=225.0+qAbs(fifthsAt(m_keySignatures,m_seekRangeStart))*8.0,musicRight=1000.0;
     const double scale=(musicRight-musicLeft)/m_seekRangeWindow;
     m_seekPreviewBeat=qMax(0.0,qRound((m_seekRangeStart+(qBound(musicLeft,x,musicRight)-musicLeft)/scale)*8.0)/8.0);

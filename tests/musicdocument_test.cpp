@@ -126,13 +126,13 @@ int main(int argc, char **argv) {
     ok &= check(qAbs(durationFor(60) - .5) < .001, "eighth-note duration is preserved");
     ok &= check(qAbs(durationFor(62) - .5) < .001, "tied 16th notes become one sustained note");
 
-    const QString project = temp.filePath("roundtrip.keyflow");
-    ok &= check(MusicDocument::saveJson(project, source, 72, "Chord drill", &error), "write Keyflow project");
+    const QString project = temp.filePath("roundtrip.varpeggio");
+    ok &= check(MusicDocument::saveJson(project, source, 72, "Chord drill", &error), "write VArpeggio project");
     loaded.clear(); tempo = 90;
-    ok &= check(MusicDocument::importFile(project, loaded, title, tempo, &error), "read Keyflow project");
+    ok &= check(MusicDocument::importFile(project, loaded, title, tempo, &error), "read VArpeggio project");
     ok &= check(loaded.size() == source.size() && title == "Chord drill" && tempo == 72, "project metadata round trip");
 
-    const QString annotatedProject=temp.filePath("annotated.keyflow");QVector<NoteEvent> annotated=source;if(!annotated.isEmpty())annotated[0].accidental=AccidentalMark::Natural;
+    const QString annotatedProject=temp.filePath("annotated.varpeggio");QVector<NoteEvent> annotated=source;if(!annotated.isEmpty())annotated[0].accidental=AccidentalMark::Natural;
     ok &= check(MusicDocument::saveJson(annotatedProject,annotated,72,"Annotated",&error,{{0,3,4},{3,4,4}},{3},{{0,-1}},{{2,1,Hand::Left}}),"write editable notation metadata");
     QFile annotatedFile(annotatedProject);annotatedFile.open(QIODevice::ReadOnly);const QJsonObject annotatedJson=QJsonDocument::fromJson(annotatedFile.readAll()).object();
     ok &= check(annotatedJson.value("timeSignatures").toArray().size()==2&&annotatedJson.value("keySignatures").toArray().size()==1&&annotatedJson.value("repeatEnds").toArray().size()==1&&annotatedJson.value("rests").toArray().size()==1,"project preserves meter, key, repeat, and rest data");
@@ -145,13 +145,13 @@ int main(int argc, char **argv) {
     QFile projectFile(project); projectFile.open(QIODevice::ReadOnly);
     {
         QPdfWriter pdf(pdfPath);
-        pdf.setTitle("Playable Keyflow test");
-        pdf.addFileAttachment("roundtrip.keyflow", projectFile.readAll(), "application/vnd.keyflow+json");
-        QPainter painter(&pdf); painter.drawText(100, 100, "Playable Keyflow PDF"); painter.end();
+        pdf.setTitle("Playable VArpeggio test");
+        pdf.addFileAttachment("roundtrip.varpeggio", projectFile.readAll(), "application/vnd.voncloft.varpeggio+json");
+        QPainter painter(&pdf); painter.drawText(100, 100, "Playable VArpeggio PDF"); painter.end();
     }
-    const QString extracted = temp.filePath("extracted.keyflow");
+    const QString extracted = temp.filePath("extracted.varpeggio");
     QProcess detach;
-    detach.start("pdfdetach", {"-savefile", "roundtrip.keyflow", "-o", extracted, pdfPath});
+    detach.start("pdfdetach", {"-savefile", "roundtrip.varpeggio", "-o", extracted, pdfPath});
     ok &= check(detach.waitForFinished(5000) && detach.exitCode() == 0, "extract playable PDF notes");
     loaded.clear(); tempo = 90; title.clear();
     ok &= check(MusicDocument::importFile(extracted, loaded, title, tempo, &error), "read notes embedded in PDF");
@@ -183,6 +183,6 @@ int main(int argc, char **argv) {
     ok &= check(hasBass && hasTreble, "audio transcription retains bass and treble ranges");
 
     if (!ok) { std::cerr << error.toStdString() << '\n'; return 1; }
-    std::cout << "All Keyflow music-document tests passed.\n";
+    std::cout << "All VArpeggio music-document tests passed.\n";
     return 0;
 }

@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-keyflow_package_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-keyflow_bin_dir="${HOME}/.local/bin"
-keyflow_data_dir="${XDG_DATA_HOME:-${HOME}/.local/share}"
+varpeggio_package_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+varpeggio_bin_dir="${HOME}/.local/bin"
+varpeggio_data_dir="${XDG_DATA_HOME:-${HOME}/.local/share}"
 
-install -Dm755 "${keyflow_package_dir}/keyflow" "${keyflow_bin_dir}/keyflow"
-install -Dm644 "${keyflow_package_dir}/org.keyflow.Studio.svg" "${keyflow_data_dir}/icons/hicolor/scalable/apps/org.keyflow.Studio.svg"
-install -Dm644 "${keyflow_package_dir}/org.keyflow.Studio.desktop" "${keyflow_data_dir}/applications/org.keyflow.Studio.desktop"
-sed -i "s|^Exec=.*|Exec=${keyflow_bin_dir}/keyflow|" "${keyflow_data_dir}/applications/org.keyflow.Studio.desktop"
+varpeggio_binary="${varpeggio_package_dir}/varpeggio"
+if [[ ! -x "${varpeggio_binary}" ]]; then varpeggio_binary="${varpeggio_package_dir}/build/varpeggio"; fi
+install -Dm755 "${varpeggio_binary}" "${varpeggio_bin_dir}/varpeggio"
+install -Dm644 "${varpeggio_package_dir}/com.voncloft.VArpeggio.svg" "${varpeggio_data_dir}/icons/hicolor/scalable/apps/com.voncloft.VArpeggio.svg"
+install -Dm644 "${varpeggio_package_dir}/com.voncloft.VArpeggio.desktop" "${varpeggio_data_dir}/applications/com.voncloft.VArpeggio.desktop"
+sed -i "s|^Exec=.*|Exec=${varpeggio_bin_dir}/varpeggio|" "${varpeggio_data_dir}/applications/com.voncloft.VArpeggio.desktop"
 
-printf 'Keyflow is installed. Open the KDE launcher and search for Keyflow MIDI Studio.\n'
+printf 'VArpeggio is installed. Open the KDE launcher and search for VArpeggio.\n'

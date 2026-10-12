@@ -1,4 +1,6 @@
 #include "mainwindow.h"
+#include "audiverisbridge.h"
+#include "pdfrecognizer.h"
 
 #include <QApplication>
 #include <QAudioOutput>
@@ -39,6 +41,7 @@
 #include <QProgressDialog>
 #include <QProcess>
 #include <QProcessEnvironment>
+#include <QPointer>
 #include <QPushButton>
 #include <QRandomGenerator>
 #include <QScrollArea>
@@ -63,12 +66,16 @@
 #include <atomic>
 #include <limits>
 
+#ifndef VARPEGGIO_VERSION
+#define VARPEGGIO_VERSION "0.1.0"
+#endif
+
 namespace {
 QLabel *label(const QString &text,const QString &name={}){auto*l=new QLabel(text);if(!name.isEmpty())l->setObjectName(name);return l;}
 QPushButton *button(const QString &text,const QString &name={}){auto*b=new QPushButton(text);if(!name.isEmpty())b->setObjectName(name);b->setCursor(Qt::PointingHandCursor);return b;}
 QFrame *line(bool vertical=false){auto*f=new QFrame;f->setFrameShape(vertical?QFrame::VLine:QFrame::HLine);f->setObjectName("divider");return f;}
 void shadow(QWidget*w){auto*s=new QGraphicsDropShadowEffect(w);s->setBlurRadius(32);s->setOffset(0,10);s->setColor(QColor(24,49,45,24));w->setGraphicsEffect(s);}
-QString safeName(QString name){name=name.trimmed().replace(QRegularExpression("[^A-Za-z0-9._-]+"),"-");return name.isEmpty()?"keyflow-score":name;}
+QString safeName(QString name){name=name.trimmed().replace(QRegularExpression("[^A-Za-z0-9._-]+"),"-");return name.isEmpty()?"varpeggio-score":name;}
 
 struct DailyRoutineTheme { QString keyName; int transpose=0; int index=0; int chordOrder=0; int earFocus=0; bool useOde=false; };
 DailyRoutineTheme dailyRoutineTheme(const QDate &date){
@@ -153,7 +160,7 @@ protected:
         p.setPen(QPen(QColor("#f5df75"),2,Qt::DashLine));p.drawLine(QPointF(video.left(),strike),QPointF(video.right(),strike));
         p.fillRect(QRectF(video.left()+12,video.bottom()-42,video.width()-24,30),QColor(3,12,20,205));
         p.setPen(QColor("#ffffff"));p.drawText(QRectF(video.left()+22,video.bottom()-38,video.width()-44,24),Qt::AlignVCenter,
-            "If a source colour bar remains after its outline/key highlight vanishes, Keyflow shortened that note.");
+            "If a source colour bar remains after its outline/key highlight vanishes, VArpeggio shortened that note.");
     }
 private:
     QVector<NoteEvent> m_notes;int m_tempo=96;double m_sourceStart=0;TranscriptionInfo m_geometry;
@@ -195,7 +202,7 @@ bool saveDetectorVideo(const QString &path,const QString &source,const QVector<N
          "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n";
     QProcess probe;probe.start("ffprobe",{"-v","error","-show_entries","format=duration","-of","default=nw=1:nk=1",source});probe.waitForFinished(10000);
     const double sourceDuration=QString::fromLocal8Bit(probe.readAllStandardOutput()).trimmed().toDouble();
-    out<<QString("Dialogue: 10,0:00:00.00,%1,Art,,0,0,0,,{\\an7\\pos(20,18)\\p0\\fs24\\b1\\bord2\\3c&H000000&}KEYFLOW DETECTOR — outlined bars are accepted notes\n").arg(assTime(qMax(1.0,sourceDuration)));
+    out<<QString("Dialogue: 10,0:00:00.00,%1,Art,,0,0,0,,{\\an7\\pos(20,18)\\p0\\fs24\\b1\\bord2\\3c&H000000&}VARPEGGIO DETECTOR — outlined bars are accepted notes\n").arg(assTime(qMax(1.0,sourceDuration)));
     const double secondsPerBeat=60.0/qMax(1,tempo),fall=qMax(12.0,geometry.fallPixelsPerSecond);
     for(int noteIndex=0;noteIndex<notes.size();++noteIndex){const auto &note=notes[noteIndex];
         if(note.note<0||note.note>=geometry.laneCenters.size()||geometry.laneCenters[note.note]<0)continue;
@@ -284,7 +291,7 @@ bool saveFallingNoteVideo(const QString &path,const QVector<NoteEvent> &notes,in
 
 QString matchingScoreSidecar(const QFileInfo &pdf) {
     const QString wantedBase=pdf.completeBaseName();
-    const QStringList priority={QStringLiteral("keyflow"),QStringLiteral("musicxml"),QStringLiteral("mxl"),
+    const QStringList priority={QStringLiteral("varpeggio"),QStringLiteral("musicxml"),QStringLiteral("mxl"),
                                 QStringLiteral("xml"),QStringLiteral("mid"),QStringLiteral("midi")};
     const QFileInfoList files=QDir(pdf.absolutePath()).entryInfoList(QDir::Files|QDir::Readable,QDir::Name);
     for (const QString &extension : priority)
@@ -314,125 +321,6 @@ QString scorePosition(double beat,QVector<TimeSignatureEvent> signatures) {
     return QString("MEASURE %1").arg(measure);
 }
 
-struct AudiverisLauncher {
-    QString program;
-    QStringList prefixArguments;
-    bool flatpak=false;
-    explicit operator bool() const { return !program.isEmpty(); }
-};
-
-AudiverisLauncher findAudiveris() {
-    for (const QString &name : {QStringLiteral("Audiveris"),QStringLiteral("audiveris")}) {
-        const QString executable=QStandardPaths::findExecutable(name);
-        if (!executable.isEmpty()) return {executable,{},false};
-    }
-    const QString installed=QStringLiteral("/opt/audiveris/bin/Audiveris");
-    if (QFileInfo(installed).isExecutable()) return {installed,{},false};
-    const QString bundled=QDir(QCoreApplication::applicationDirPath()).filePath(
-        QStringLiteral("audiveris-runtime/opt/audiveris/bin/Audiveris"));
-    if (QFileInfo(bundled).isExecutable()) return {bundled,{},false};
-
-    const QString flatpak=QStandardPaths::findExecutable(QStringLiteral("flatpak"));
-    if (!flatpak.isEmpty()) {
-        QProcess info;
-        info.start(flatpak,{QStringLiteral("info"),QStringLiteral("org.audiveris.audiveris")});
-        if (info.waitForFinished(5000) && info.exitStatus()==QProcess::NormalExit && info.exitCode()==0)
-            return {flatpak,{QStringLiteral("run"),QStringLiteral("org.audiveris.audiveris")},true};
-    }
-    return {};
-}
-
-struct OpticalScoreResult {
-    QVector<NoteEvent> notes;
-    QString title;
-    QString error;
-    int tempo=96;
-    int movementCount=0;
-    bool canceled=false;
-};
-
-OpticalScoreResult recognizePdf(const AudiverisLauncher &launcher,const QString &pdfPath,int fallbackTempo,
-                                const std::function<bool()> &canceled) {
-    OpticalScoreResult result;result.tempo=fallbackTempo;
-    QTemporaryDir workspace;
-    if (!workspace.isValid()) { result.error="Could not create a temporary optical-recognition workspace.";return result; }
-
-    QStringList arguments=launcher.prefixArguments;
-    if (launcher.flatpak) {
-        // Per-run permissions expose only the selected PDF's folder and this disposable output folder.
-        arguments.insert(1,QStringLiteral("--filesystem=")+QFileInfo(pdfPath).absolutePath()+QStringLiteral(":ro"));
-        arguments.insert(2,QStringLiteral("--filesystem=")+workspace.path());
-    }
-    arguments<<QStringLiteral("-batch")<<QStringLiteral("-transcribe")<<QStringLiteral("-export")
-             <<QStringLiteral("-output")<<workspace.path()<<QStringLiteral("--")<<pdfPath;
-
-    QProcess process;
-    process.setProcessChannelMode(QProcess::MergedChannels);
-    QProcessEnvironment environment=QProcessEnvironment::systemEnvironment();
-    environment.insert("XDG_CACHE_HOME",workspace.filePath("cache"));
-    environment.insert("XDG_CONFIG_HOME",workspace.filePath("config"));
-    environment.insert("XDG_DATA_HOME",workspace.filePath("data"));
-    process.setProcessEnvironment(environment);
-    process.start(launcher.program,arguments);
-    if (!process.waitForStarted(10000)) {
-        result.error="Audiveris was found, but it could not be started: "+process.errorString();
-        return result;
-    }
-    QByteArray diagnostic;
-    while (!process.waitForFinished(250)) {
-        diagnostic+=process.readAll();
-        if (diagnostic.size()>12000) diagnostic=diagnostic.right(12000);
-        if (canceled&&canceled()) {
-            process.terminate();
-            if (!process.waitForFinished(2000)) { process.kill();process.waitForFinished(2000); }
-            result.canceled=true;
-            return result;
-        }
-    }
-    diagnostic+=process.readAll();
-    if (diagnostic.size()>12000) diagnostic=diagnostic.right(12000);
-
-    QStringList exports;
-    QDirIterator it(workspace.path(),QDir::Files,QDirIterator::Subdirectories);
-    while (it.hasNext()) {
-        const QString candidate=it.next();
-        const QString suffix=QFileInfo(candidate).suffix().toLower();
-        if (suffix=="mxl"||suffix=="musicxml"||suffix=="xml") exports<<candidate;
-    }
-    exports.sort(Qt::CaseInsensitive);
-
-    double nextStart=0.0;
-    QStringList importErrors;
-    for (const QString &scorePath : exports) {
-        QVector<NoteEvent> movement;QString movementTitle;QString importError;int movementTempo=result.tempo;
-        if (!MusicDocument::importFile(scorePath,movement,movementTitle,movementTempo,&importError) || movement.isEmpty()) {
-            importErrors<<QFileInfo(scorePath).fileName()+": "+importError;
-            continue;
-        }
-        double movementEnd=0.0;
-        for (NoteEvent note : movement) {
-            note.start+=nextStart;
-            movementEnd=qMax(movementEnd,note.start+note.duration);
-            result.notes<<note;
-        }
-        nextStart=movementEnd+1.0;
-        if (result.title.isEmpty()&&!movementTitle.isEmpty()) result.title=movementTitle;
-        if (result.movementCount==0) result.tempo=movementTempo;
-        ++result.movementCount;
-    }
-
-    if (result.notes.isEmpty()) {
-        const QString tail=QString::fromLocal8Bit(diagnostic).trimmed().right(1800);
-        if (exports.isEmpty()) result.error="Audiveris did not export a MusicXML score.";
-        else result.error="Audiveris exported a score, but it contained no playable pitched notes.";
-        if (!importErrors.isEmpty()) result.error+="\n\n"+importErrors.join("\n");
-        if (!tail.isEmpty()) result.error+="\n\nAudiveris details:\n"+tail;
-        return result;
-    }
-    std::sort(result.notes.begin(),result.notes.end(),[](const auto &a,const auto &b){return a.start==b.start?a.note<b.note:a.start<b.start;});
-    return result;
-}
-
 void showPdfRecognitionDialog(QWidget *parent,const QString &title,const QString &message) {
     QDialog dialog(parent);dialog.setWindowTitle(title);dialog.setMinimumWidth(660);
     auto*layout=new QVBoxLayout(&dialog);layout->setContentsMargins(24,20,24,18);layout->setSpacing(14);
@@ -456,7 +344,7 @@ bool MainWindow::saveDetectorVideoFile(const QString &path,const QString &source
 }
 
 MainWindow::MainWindow(QWidget *parent):QMainWindow(parent),m_synth(this),m_midi(this),m_midiOutput(this){
-    setWindowTitle("Keyflow — MIDI practice & notation studio");setMinimumSize(1080,760);resize(1420,930);
+    setWindowTitle("VArpeggio — piano practice & notation studio");setMinimumSize(1080,760);resize(1420,930);
     m_sourceAudioOutput=new QAudioOutput(this);m_sourcePlayer=new QMediaPlayer(this);m_sourcePlayer->setAudioOutput(m_sourceAudioOutput);
     m_keyMap={{Qt::Key_A,60},{Qt::Key_W,61},{Qt::Key_S,62},{Qt::Key_E,63},{Qt::Key_D,64},{Qt::Key_F,65},{Qt::Key_T,66},{Qt::Key_G,67},{Qt::Key_Y,68},{Qt::Key_H,69},{Qt::Key_U,70},{Qt::Key_J,71},{Qt::Key_K,72}};
     auto*root=new QWidget;auto*rootLayout=new QVBoxLayout(root);rootLayout->setContentsMargins(0,0,0,0);rootLayout->setSpacing(0);rootLayout->addWidget(buildHeader());auto*body=new QWidget;auto*bodyLayout=new QHBoxLayout(body);bodyLayout->setContentsMargins(0,0,0,0);bodyLayout->setSpacing(0);bodyLayout->addWidget(buildSidebar());bodyLayout->addWidget(buildWorkspace(),1);rootLayout->addWidget(body,1);setCentralWidget(root);
@@ -493,30 +381,577 @@ void MainWindow::clearImportedMediaSource(){
 
 bool MainWindow::useImportedMediaAudio()const{return m_mode==Mode::Listen&&m_sourceAudio&&m_sourceAudio->isChecked()&&!m_importedMediaPath.isEmpty();}
 
-QWidget *MainWindow::buildHeader(){auto*w=new QFrame;w->setObjectName("header");w->setFixedHeight(68);auto*l=new QHBoxLayout(w);l->setContentsMargins(25,0,22,0);auto*mark=label("▥","brandMark");auto*brand=label("Keyflow","brand");l->addWidget(mark);l->addWidget(brand);l->addStretch();m_midiButton=button("●   Connect MIDI keyboard","midiButton");l->addWidget(m_midiButton);l->addStretch();auto*help=button("?","roundButton");help->setToolTip("Keyboard shortcuts");connect(help,&QPushButton::clicked,this,[this]{QMessageBox::information(this,"Keyflow shortcuts","A W S E D F T G Y H U J K   Play from C4\nSpace   Start, stop, or hear the ear-training sound again\nR   Start or stop Free Play recording\nEsc   Stop everything");});l->addWidget(help);auto*avatar=button("KF","avatar");l->addWidget(avatar);return w;}
+QWidget *MainWindow::buildHeader() {
+  auto *w = new QFrame;
+  w->setObjectName("header");
+  w->setFixedHeight(68);
+  auto *l = new QHBoxLayout(w);
+  l->setContentsMargins(25, 0, 22, 0);
+  auto *mark = label("▥", "brandMark");
+  auto *brand = label("VArpeggio", "brand");
+  l->addWidget(mark);
+  l->addWidget(brand);
+  l->addStretch();
+  m_midiButton = button("●   Connect MIDI keyboard", "midiButton");
+  l->addWidget(m_midiButton);
+  l->addStretch();
+  auto *help = button("?", "roundButton");
+  help->setToolTip("Keyboard shortcuts");
+  connect(help, &QPushButton::clicked, this, [this] {
+    QMessageBox::information(
+        this, "VArpeggio shortcuts",
+        "A W S E D F T G Y H U J K   Play from C4\nSpace   Start, stop, or "
+        "hear the ear-training sound again\nR   Start or stop Free Play "
+        "recording\nEsc   Stop everything");
+  });
+  l->addWidget(help);
+  auto *avatar = button("VA", "avatar");
+  l->addWidget(avatar);
+  return w;
+}
 
-QWidget *MainWindow::buildSidebar(){auto*w=new QFrame;w->setObjectName("sidebar");w->setFixedWidth(236);auto*l=new QVBoxLayout(w);l->setContentsMargins(14,23,14,16);l->setSpacing(5);l->addWidget(label("STUDIO","sideHeading"));m_modeButtons=new QButtonGroup(this);m_modeButtons->setExclusive(true);struct Entry{QString text,tip;Mode mode;QString icon;};QVector<Entry>entries={{"Wait mode","Waits for the right key",Mode::Wait,"◎"},{"Listen","Hear the imported sheet",Mode::Listen,"♫"},{"Play along","Follow the tempo",Mode::Follow,"▶"},{"Free play","Play freely or record",Mode::Free,"⌁"}};for(auto&e:entries){auto*b=button(e.icon+"    "+e.text+"\n       "+e.tip,"modeButton");b->setCheckable(true);b->setProperty("mode",int(e.mode));b->setMinimumHeight(50);m_modeButtons->addButton(b);m_modeButtons->setId(b,int(e.mode));l->addWidget(b);}m_modeButtons->button(int(Mode::Wait))->setChecked(true);l->addSpacing(10);l->addWidget(line());l->addSpacing(7);l->addWidget(label("MUSIC","sideHeading"));auto*morning=button("𝄞    Morning Light\n       18 notes · beginner","libraryButton");auto*ode=button("♫    Ode to Joy\n       23 notes · beginner","libraryButton");auto*import=button("＋  Import score…","importButton");l->addWidget(morning);l->addWidget(ode);l->addWidget(import);connect(morning,&QPushButton::clicked,this,[this]{setSong("Morning Light",MusicDocument::morningLight(),96);});connect(ode,&QPushButton::clicked,this,[this]{setSong("Ode to Joy",MusicDocument::odeToJoy(),92);});connect(import,&QPushButton::clicked,this,&MainWindow::importScore);
-    auto*daily=new QFrame;daily->setObjectName("dailyCard");auto*dl=new QVBoxLayout(daily);dl->setContentsMargins(12,11,12,11);auto*top=new QHBoxLayout;auto*day=label(QDate::currentDate().toString("dddd")+" focus","dailyTitle");top->addWidget(day);top->addStretch();top->addWidget(label("14 MIN","dailyTime"));dl->addLayout(top);dl->addWidget(label("●  ●  ●  ○  ◉  ○  ○","weekDots"));dl->addWidget(label("SCALE   CHORDS   EAR   SONG","routineParts"));auto*routine=button("Open practice plan      →","routineButton");dl->addWidget(routine);connect(routine,&QPushButton::clicked,this,&MainWindow::openRoutineDialog);l->addWidget(daily);l->addStretch();auto*lab=button("✦   Video → notes       LAB\n      Experimental transcription","labButton");l->addWidget(lab);connect(lab,&QPushButton::clicked,this,&MainWindow::openVideoLab);return w;}
+QWidget *MainWindow::buildSidebar() {
+  auto *w = new QFrame;
+  w->setObjectName("sidebar");
+  w->setFixedWidth(236);
+  auto *l = new QVBoxLayout(w);
+  l->setContentsMargins(14, 23, 14, 16);
+  l->setSpacing(5);
+  l->addWidget(label("STUDIO", "sideHeading"));
+  m_modeButtons = new QButtonGroup(this);
+  m_modeButtons->setExclusive(true);
+  struct Entry {
+    QString text, tip;
+    Mode mode;
+    QString icon;
+  };
+  QVector<Entry> entries = {
+      {"Wait mode", "Waits for the right key", Mode::Wait, "◎"},
+      {"Listen", "Hear the imported sheet", Mode::Listen, "♫"},
+      {"Play along", "Follow the tempo", Mode::Follow, "▶"},
+      {"Free play", "Play freely or record", Mode::Free, "⌁"}};
+  for (auto &e : entries) {
+    auto *b =
+        button(e.icon + "    " + e.text + "\n       " + e.tip, "modeButton");
+    b->setCheckable(true);
+    b->setProperty("mode", int(e.mode));
+    b->setMinimumHeight(50);
+    m_modeButtons->addButton(b);
+    m_modeButtons->setId(b, int(e.mode));
+    l->addWidget(b);
+  }
+  m_modeButtons->button(int(Mode::Wait))->setChecked(true);
+  l->addSpacing(10);
+  l->addWidget(line());
+  l->addSpacing(7);
+  l->addWidget(label("MUSIC", "sideHeading"));
+  auto *morning =
+      button("𝄞    Morning Light\n       18 notes · beginner", "libraryButton");
+  auto *ode =
+      button("♫    Ode to Joy\n       23 notes · beginner", "libraryButton");
+  auto *import = button("＋  Import score…", "importButton");
+  l->addWidget(morning);
+  l->addWidget(ode);
+  l->addWidget(import);
+  connect(morning, &QPushButton::clicked, this, [this] {
+    setSong("Morning Light", MusicDocument::morningLight(), 96);
+  });
+  connect(ode, &QPushButton::clicked, this,
+          [this] { setSong("Ode to Joy", MusicDocument::odeToJoy(), 92); });
+  connect(import, &QPushButton::clicked, this, &MainWindow::importScore);
+  auto *daily = new QFrame;
+  daily->setObjectName("dailyCard");
+  auto *dl = new QVBoxLayout(daily);
+  dl->setContentsMargins(12, 11, 12, 11);
+  auto *top = new QHBoxLayout;
+  auto *day =
+      label(QDate::currentDate().toString("dddd") + " focus", "dailyTitle");
+  top->addWidget(day);
+  top->addStretch();
+  top->addWidget(label("14 MIN", "dailyTime"));
+  dl->addLayout(top);
+  dl->addWidget(label("●  ●  ●  ○  ◉  ○  ○", "weekDots"));
+  dl->addWidget(label("SCALE   CHORDS   EAR   SONG", "routineParts"));
+  auto *routine = button("Open practice plan      →", "routineButton");
+  dl->addWidget(routine);
+  connect(routine, &QPushButton::clicked, this, &MainWindow::openRoutineDialog);
+  l->addWidget(daily);
+  l->addStretch();
+  auto *lab =
+      button("✦   Video → notes       LAB\n      Experimental transcription",
+             "labButton");
+  l->addWidget(lab);
+  connect(lab, &QPushButton::clicked, this, &MainWindow::openVideoLab);
+  return w;
+}
 
-QWidget *MainWindow::makeCard(const QString&name){auto*w=new QFrame;if(!name.isEmpty())w->setObjectName(name);else w->setObjectName("card");shadow(w);return w;}
+QWidget *MainWindow::makeCard(const QString &name) {
+  auto *w = new QFrame;
+  if (!name.isEmpty())
+    w->setObjectName(name);
+  else
+    w->setObjectName("card");
+  shadow(w);
+  return w;
+}
 
-QWidget *MainWindow::buildWorkspace(){auto*scroll=new QScrollArea;scroll->setWidgetResizable(true);scroll->setFrameShape(QFrame::NoFrame);scroll->setObjectName("workspaceScroll");auto*page=new QWidget;page->setObjectName("workspace");auto*l=new QVBoxLayout(page);l->setContentsMargins(34,27,34,38);l->setSpacing(14);
-    auto*songRow=new QHBoxLayout;auto*songInfo=new QVBoxLayout;m_modeLabel=label("WAIT MODE · PRACTICE","eyebrow");m_titleEdit=new QLineEdit("Morning Light");m_titleEdit->setObjectName("songTitle");m_titleEdit->setMinimumWidth(0);m_titleEdit->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Preferred);auto*meta=new QHBoxLayout;m_statusLabel=label("C major","meta");m_noteCountLabel=label("18 notes","meta");m_durationLabel=label("0:15","meta");meta->addWidget(m_statusLabel);meta->addWidget(label("·","meta"));meta->addWidget(m_noteCountLabel);meta->addWidget(label("·","meta"));meta->addWidget(m_durationLabel);meta->addSpacing(12);m_sourceAudio=new QCheckBox("Play original recording");m_sourceAudio->setEnabled(false);m_sourceAudio->setToolTip("A/B comparison: use the untouched imported audio instead of Keyflow's generated notes");meta->addWidget(m_sourceAudio);m_detectorButton=button("Open Director","detectorButton");m_detectorButton->setToolTip("Play the source video with Keyflow's accepted note bars drawn over it");m_detectorButton->setMinimumSize(124,32);m_detectorButton->setStyleSheet("QPushButton{color:#ffffff;background:#2d7d70;border:2px solid #205e54;border-radius:7px;padding:6px 12px;font-weight:800}QPushButton:hover{background:#235f56;border-color:#173f39}QPushButton:pressed{background:#173f39}QPushButton:disabled{color:#40514d;background:#c8d0cd;border-color:#a9b5b1}");m_detectorButton->hide();meta->addWidget(m_detectorButton);meta->addStretch();songInfo->addWidget(m_modeLabel);songInfo->addWidget(m_titleEdit);songInfo->addLayout(meta);songRow->addLayout(songInfo,1);
-    auto*transport=new QHBoxLayout;auto*rewind=button("↶","transportButton");m_playButton=button("▶  Listen","playButton");m_playButton->setToolTip("Listen to the loaded score (Space)");auto*stop=button("■","transportButton");transport->addWidget(rewind);transport->addWidget(m_playButton);transport->addWidget(stop);auto*tempoDown=button("−","tempoButton");m_tempoControl=new QSpinBox;m_tempoControl->setObjectName("tempoControl");m_tempoControl->setRange(30,260);m_tempoControl->setValue(96);m_tempoControl->setSuffix(" BPM");m_tempoControl->setAlignment(Qt::AlignCenter);m_tempoControl->setButtonSymbols(QAbstractSpinBox::NoButtons);m_tempoControl->setFixedWidth(78);m_tempoControl->setToolTip("Type an exact tempo; changes immediately retime sound, live score, and falling notes");auto*tempoUp=button("＋","tempoButton");transport->addSpacing(7);transport->addWidget(tempoDown);transport->addWidget(m_tempoControl);transport->addWidget(tempoUp);songRow->addLayout(transport);
-    m_exportCombo=new QComboBox;m_exportCombo->setObjectName("exportCombo");for(auto item:QVector<QPair<QString,QString>>{{"MIDI (.mid)","mid"},{"MusicXML","musicxml"},{"ABC notation","abc"},{"Audio (.wav)","wav"},{"Falling-note video (.mp4)","video"},{"Score (.svg)","svg"},{"Score (.png)","png"},{"Score (.pdf)","pdf"},{"Keyflow project","json"},{"Note list (.csv)","csv"}})m_exportCombo->addItem(item.first,item.second);auto*save=button("Save","saveButton");auto*saveLayout=new QHBoxLayout;saveLayout->setSpacing(0);saveLayout->addWidget(m_exportCombo);saveLayout->addWidget(save);songRow->addSpacing(24);songRow->addLayout(saveLayout);l->addLayout(songRow);
-    connect(rewind,&QPushButton::clicked,this,[this]{stopPlayback(true);rebuildPractice();});connect(stop,&QPushButton::clicked,this,[this]{stopPlayback(true);if(m_mode==Mode::Wait)rebuildPractice();});connect(tempoDown,&QPushButton::clicked,this,[this]{m_tempoControl->setValue(m_tempoControl->value()-1);});connect(tempoUp,&QPushButton::clicked,this,[this]{m_tempoControl->setValue(m_tempoControl->value()+1);});connect(m_tempoControl,qOverload<int>(&QSpinBox::valueChanged),this,&MainWindow::changeTempo);connect(save,&QPushButton::clicked,this,&MainWindow::exportScore);
-    m_notice=new QFrame;m_notice->setObjectName("notice");auto*nl=new QHBoxLayout(m_notice);nl->setContentsMargins(12,8,8,8);m_noticeText=label("");m_noticeText->setWordWrap(true);nl->addWidget(label("i","noticeIcon"));nl->addWidget(m_noticeText,1);m_noticeClose=button("×","noticeClose");nl->addWidget(m_noticeClose);m_notice->hide();l->addWidget(m_notice);
-    m_routineSession=new QFrame;m_routineSession->setObjectName("routineSession");auto*rsl=new QHBoxLayout(m_routineSession);rsl->setContentsMargins(14,9,10,9);rsl->setSpacing(10);auto*routineText=new QVBoxLayout;routineText->setSpacing(1);m_routineStepLabel=label("DAILY PLAN · STEP 1 OF 8","routineSessionStep");m_routineDetailLabel=label("C major scale · Right hand","routineSessionDetail");routineText->addWidget(m_routineStepLabel);routineText->addWidget(m_routineDetailLabel);rsl->addLayout(routineText,1);m_routinePreviousButton=button("← Previous","routineSessionSecondary");m_routineNextButton=button("Next step →","routineSessionPrimary");auto*endRoutine=button("Close plan","routineSessionSecondary");for(auto*b:{m_routinePreviousButton,m_routineNextButton,endRoutine})b->setMinimumHeight(34);rsl->addWidget(m_routinePreviousButton);rsl->addWidget(m_routineNextButton);rsl->addWidget(endRoutine);connect(m_routinePreviousButton,&QPushButton::clicked,this,[this]{if(m_routineStep>0)loadRoutineStep(m_routineStep-1);});connect(m_routineNextButton,&QPushButton::clicked,this,[this]{if(m_routineStep<7)loadRoutineStep(m_routineStep+1);else finishRoutinePlan();});connect(endRoutine,&QPushButton::clicked,this,[this]{m_earTraining=false;m_synth.stopSequence();m_routineStep=-1;m_routineSession->hide();toast("Practice plan closed");});m_routineSession->hide();l->addWidget(m_routineSession);
-    auto*scoreCard=makeCard("card");auto*sl=new QVBoxLayout(scoreCard);sl->setContentsMargins(0,0,0,0);sl->setSpacing(0);auto*scoreTop=new QWidget;scoreTop->setObjectName("cardTop");auto*st=new QHBoxLayout(scoreTop);st->setContentsMargins(16,7,13,7);m_barLabel=label("SCORE   ·   Bar 1 of 3","sectionHeading");st->addWidget(m_barLabel);m_freeEditButton=button("✎  Edit staff…","freeStaffButton");m_freeEditButton->setToolTip("Change pitch, timing, length, hand, or remove notes from the Free Play grand staff");m_freeClearButton=button("×  Clear staff","freeStaffButton");m_freeClearButton->setToolTip("Remove every note from the Free Play grand staff");m_freeEditButton->hide();m_freeClearButton->hide();st->addWidget(m_freeEditButton);st->addWidget(m_freeClearButton);m_scoreDisplayButtons=new QButtonGroup(this);m_scoreDisplayButtons->setExclusive(true);m_scoreViewButton=button("Exact PDF","scoreViewButton");m_scoreViewButton->setCheckable(true);m_scoreViewButton->setToolTip("Show the page-perfect original or engraved score");m_liveScoreButton=button("Live follow","scoreViewButton");m_liveScoreButton->setCheckable(true);m_liveScoreButton->setToolTip("Show simplified practice notation that moves with your place");m_scoreDisplayButtons->addButton(m_scoreViewButton,0);m_scoreDisplayButtons->addButton(m_liveScoreButton,1);m_scoreViewButton->hide();m_liveScoreButton->hide();st->addWidget(m_scoreViewButton);st->addWidget(m_liveScoreButton);st->addStretch();m_handButtons=new QButtonGroup(this);m_handButtons->setExclusive(true);auto*hands=new QWidget;hands->setObjectName("hands");auto*hl=new QHBoxLayout(hands);hl->setContentsMargins(2,2,2,2);hl->setSpacing(0);for(auto h:QVector<QPair<QString,int>>{{"Right",1},{"Left",0},{"Together",2}}){auto*b=button(h.first,"handButton");b->setCheckable(true);m_handButtons->addButton(b,h.second);hl->addWidget(b);}m_handButtons->button(2)->setChecked(true);st->addWidget(hands);m_metronome=new QCheckBox("Metronome");m_noteNames=new QCheckBox("Note names");m_noteNames->setToolTip("Optional learning aid: show pitch names beside notes");m_bubbles=new QCheckBox("Falling notes");m_bubbles->setChecked(true);for(auto*c:{m_metronome,m_noteNames,m_bubbles})st->addWidget(c);sl->addWidget(scoreTop);m_scoreStack=new QStackedWidget;m_score=new ScoreWidget;m_scoreStack->addWidget(m_score);m_pdfDocument=new QPdfDocument(this);m_pdfView=new QPdfView;m_pdfView->setDocument(m_pdfDocument);m_pdfView->setPageMode(QPdfView::PageMode::MultiPage);m_pdfView->setZoomMode(QPdfView::ZoomMode::FitToWidth);m_scoreStack->addWidget(m_pdfView);m_scoreStack->setMinimumHeight(520);sl->addWidget(m_scoreStack,1);m_scoreHistoryRow=new QWidget;m_scoreHistoryRow->setObjectName("scoreHistoryRow");auto*historyLayout=new QHBoxLayout(m_scoreHistoryRow);historyLayout->setContentsMargins(14,5,14,6);historyLayout->setSpacing(8);historyLayout->addWidget(label("← EARLIER","historyLabel"));m_scoreHistoryBar=new QScrollBar(Qt::Horizontal);m_scoreHistoryBar->setObjectName("scoreHistoryBar");m_scoreHistoryBar->setRange(0,0);m_scoreHistoryBar->setSingleStep(1);m_scoreHistoryBar->setPageStep(32);m_scoreHistoryBar->setToolTip("Drag left to review earlier Free Play notes; move fully right to follow new notes again");historyLayout->addWidget(m_scoreHistoryBar,1);historyLayout->addWidget(label("LATEST →","historyLabel"));m_scoreHistoryRow->hide();sl->addWidget(m_scoreHistoryRow);l->addWidget(scoreCard,3);
-    auto*practice=new QHBoxLayout;practice->setAlignment(Qt::AlignTop);auto*flow=makeCard("flowCard");flow->setFixedHeight(245);auto*fl=new QVBoxLayout(flow);fl->setContentsMargins(0,0,0,0);fl->setSpacing(0);auto*flowTop=new QWidget;flowTop->setObjectName("flowTop");auto*ft=new QHBoxLayout(flowTop);ft->setContentsMargins(16,6,14,6);ft->addWidget(label("NOTE FLOW   ·   Notes move to the play line","flowHeading"));ft->addStretch();ft->addWidget(label("● NEXT     ● PLAYED","flowLegend"));fl->addWidget(flowTop);m_bubble=new BubbleWidget;m_bubble->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Expanding);fl->addWidget(m_bubble,1);practice->addWidget(flow,1);
-    auto*coach=makeCard("coachCard");coach->setFixedWidth(244);coach->setFixedHeight(245);auto*cl=new QVBoxLayout(coach);cl->setContentsMargins(15,14,15,12);cl->addWidget(label("LIVE COACH","sectionHeading"));auto*next=new QFrame;next->setObjectName("nextNote");auto*nextL=new QVBoxLayout(next);nextL->setContentsMargins(10,7,10,7);nextL->addWidget(label("UP NEXT","miniHeading"));m_nextNoteLabel=label("C4","nextNoteText");m_nextNoteLabel->setAlignment(Qt::AlignCenter);m_nextNoteLabel->setWordWrap(true);m_nextNoteLabel->setMinimumWidth(0);m_nextNoteLabel->setFixedHeight(58);m_nextNoteLabel->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Fixed);nextL->addWidget(m_nextNoteLabel);cl->addWidget(next);m_coachLabel=label("Find middle C\nTake your time. The music waits for you.","coachText");m_coachLabel->setWordWrap(true);m_coachLabel->setMinimumHeight(35);cl->addWidget(m_coachLabel);cl->addStretch();cl->addWidget(line());auto*stats=new QHBoxLayout;m_accuracyLabel=label("—\nACCURACY","stat");m_streakLabel=label("0\nSTREAK","stat");m_progressLabel=label("0%\nPROGRESS","stat");for(auto*s:{m_accuracyLabel,m_streakLabel,m_progressLabel}){s->setAlignment(Qt::AlignCenter);stats->addWidget(s);}cl->addLayout(stats);practice->addWidget(coach);l->addLayout(practice);
-    auto*keyboard=makeCard("card");keyboard->setFixedHeight(235);auto*kl=new QVBoxLayout(keyboard);kl->setContentsMargins(0,0,0,0);kl->setSpacing(0);auto*kTop=new QWidget;kTop->setObjectName("cardTop");auto*kRows=new QVBoxLayout(kTop);kRows->setContentsMargins(16,6,13,7);kRows->setSpacing(3);auto*kt=new QHBoxLayout;kt->setSpacing(8);kt->addWidget(label("KEYBOARD","sectionHeading"));m_liveNoteLabel=label("Ready","liveNote");kt->addWidget(m_liveNoteLabel);kt->addStretch();kt->addWidget(label("Computer keys: A W S E D F T G Y H U J K","computerHint"));m_recordButton=button("●  Record free play","recordButton");m_recordButton->setToolTip("Optional: capture this Free Play session and turn it into a score");kt->addWidget(m_recordButton);kRows->addLayout(kt);auto*audioRow=new QHBoxLayout;audioRow->setSpacing(8);audioRow->addWidget(label("PIANO SOUND","sectionHeading"));m_instrumentCombo=new QComboBox;m_instrumentCombo->setObjectName("instrumentCombo");m_instrumentCombo->addItem("Kawai upright — bright",int(SynthInstrument::BrightPiano));m_instrumentCombo->addItem("Kawai upright — natural",int(SynthInstrument::AcousticGrand));m_instrumentCombo->addItem("Kawai upright — soft",int(SynthInstrument::SoftPiano));m_instrumentCombo->setToolTip("Direct playback of the recorded Kawai upright piano; natural is the default");m_instrumentCombo->setFixedWidth(190);audioRow->addWidget(m_instrumentCombo);m_sound=new QCheckBox("Sound");m_sound->setChecked(true);audioRow->addWidget(m_sound);m_midiOutputCheck=new QCheckBox("Use keyboard MIDI sound");m_midiOutputCheck->setToolTip("Send score notes through the adapter MIDI OUT to the keyboard MIDI IN; Keyflow's piano is silenced during score playback");audioRow->addWidget(m_midiOutputCheck);m_keyboardToneCombo=new QComboBox;m_keyboardToneCombo->setObjectName("keyboardToneCombo");const QStringList ctkTones={"PIANO 1","PIANO 2","HONKY-TONK","STUDIO PIANO","ELEC PIANO 1","ELEC PIANO 2","ELEC PIANO 3","ELEC PIANO 4","HARPSICHORD","CLAVELECTRO","ELEC ORGAN 1","ELEC ORGAN 2","ELEC ORGAN 3","ELEC ORGAN 4","CHURCH ORGAN","PIPE ORGAN","REED ORGAN","ACCORDION","BANDONEON","HARMONICA","GUT GUITAR","ACOUS GUITAR","JAZZ GUITAR","ELEC GUITAR","MUTE GUITAR","DIST GUITAR","WOOD BASS","ELEC BASS","SLAP BASS","BANJO","VIOLIN","CELLO","HARP","STRINGS 1","STRINGS 2","STRINGS 3","SYNTH-STR 1","SYNTH-STR 2","CHOIR","VOICE OOH","TRUMPET","TUBA","BRASS ENS","FR.HORN 1","FR.HORN 2","BRASS 1","BRASS 2","SYN-BRASS 1","SYN-BRASS 2","SYN-BRASS 3","SOPRANO SAX","ALTO SAX","TENOR SAX","OBOE","CLARINET","PICCOLO","FLUTE","RECORDER","PAN FLUTE","WHISTLE","SYN-LEAD 1","SYN-LEAD 2","SYN-LEAD 3","SYN-CALLIOPE","SYN-PAD 1","SYN-PAD 2","SYN-PAD 3","GLASS HMCA","COUNTRY FARM","SYN-BASS","PEARL DROP","COSMIC SOUND","SOUNDTRACK","SPACE PAD","VOICE BASS","APPLAUSE","SYNTH-SFX","VEHICLE","PHONE","FUNNY","STR PIANO","STR E.PIANO","CHOIR E.P","CHOIR ORGAN","STR GUITAR","STR HARP","BRASS STR","VIB PAD","12 STR GTR","CHOIR STR","BASS/PIANO","BASS/E.PIANO","BASS/VIB","BASS/GUT GTR","V.BASS/OOH","STR/PIANO","STR/TRUMPET","VIBRAPHONE","MARIMBA","PERCUSSION"};for(int tone=0;tone<ctkTones.size();++tone)m_keyboardToneCombo->addItem(QString("%1  %2").arg(tone,2,10,QChar('0')).arg(ctkTones[tone]),tone);m_keyboardToneCombo->setCurrentIndex(0);m_keyboardToneCombo->setFixedWidth(174);m_keyboardToneCombo->setToolTip("CTK-511 built-in tone. With the keyboard connected, selection works in both directions. Set the keyboard TONE MAP to N for its native 00–99 list.");audioRow->addWidget(m_keyboardToneCombo);m_volumeLabel=label("Volume 115%","volumeLabel");m_volumeLabel->setFixedWidth(88);m_volumeLabel->setAlignment(Qt::AlignRight|Qt::AlignVCenter);audioRow->addWidget(m_volumeLabel);m_volume=new QSlider(Qt::Horizontal);m_volume->setObjectName("volumeSlider");m_volume->setRange(0,150);m_volume->setValue(115);m_volume->setFixedWidth(155);m_volume->setSizePolicy(QSizePolicy::Fixed,QSizePolicy::Fixed);m_volume->setToolTip("Playback and practice volume");audioRow->addWidget(m_volume);audioRow->addStretch();kRows->addLayout(audioRow);kl->addWidget(kTop);m_piano=new PianoWidget;kl->addWidget(m_piano,1);l->addWidget(keyboard,2);scroll->setWidget(page);return scroll;}
+QWidget *MainWindow::buildWorkspace() {
+  auto *scroll = new QScrollArea;
+  scroll->setWidgetResizable(true);
+  scroll->setFrameShape(QFrame::NoFrame);
+  scroll->setObjectName("workspaceScroll");
+  auto *page = new QWidget;
+  page->setObjectName("workspace");
+  auto *l = new QVBoxLayout(page);
+  l->setContentsMargins(34, 27, 34, 38);
+  l->setSpacing(14);
+  auto *songRow = new QHBoxLayout;
+  auto *songInfo = new QVBoxLayout;
+  m_modeLabel = label("WAIT MODE · PRACTICE", "eyebrow");
+  m_titleEdit = new QLineEdit("Morning Light");
+  m_titleEdit->setObjectName("songTitle");
+  m_titleEdit->setMinimumWidth(0);
+  m_titleEdit->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+  auto *meta = new QHBoxLayout;
+  m_statusLabel = label("C major", "meta");
+  m_noteCountLabel = label("18 notes", "meta");
+  m_durationLabel = label("0:15", "meta");
+  meta->addWidget(m_statusLabel);
+  meta->addWidget(label("·", "meta"));
+  meta->addWidget(m_noteCountLabel);
+  meta->addWidget(label("·", "meta"));
+  meta->addWidget(m_durationLabel);
+  meta->addSpacing(12);
+  m_sourceAudio = new QCheckBox("Play original recording");
+  m_sourceAudio->setEnabled(false);
+  m_sourceAudio->setToolTip("A/B comparison: use the untouched imported audio "
+                            "instead of VArpeggio's generated notes");
+  meta->addWidget(m_sourceAudio);
+  m_detectorButton = button("Open Director", "detectorButton");
+  m_detectorButton->setToolTip("Play the source video with VArpeggio's "
+                               "accepted note bars drawn over it");
+  m_detectorButton->setMinimumSize(124, 32);
+  m_detectorButton->setStyleSheet(
+      "QPushButton{color:#ffffff;background:#2d7d70;border:2px solid "
+      "#205e54;border-radius:7px;padding:6px "
+      "12px;font-weight:800}QPushButton:hover{background:#235f56;border-color:#"
+      "173f39}QPushButton:pressed{background:#173f39}QPushButton:disabled{"
+      "color:#40514d;background:#c8d0cd;border-color:#a9b5b1}");
+  m_detectorButton->hide();
+  meta->addWidget(m_detectorButton);
+  meta->addStretch();
+  songInfo->addWidget(m_modeLabel);
+  songInfo->addWidget(m_titleEdit);
+  songInfo->addLayout(meta);
+  songRow->addLayout(songInfo, 1);
+  auto *transport = new QHBoxLayout;
+  auto *rewind = button("↶", "transportButton");
+  m_playButton = button("▶  Listen", "playButton");
+  m_playButton->setToolTip("Listen to the loaded score (Space)");
+  auto *stop = button("■", "transportButton");
+  transport->addWidget(rewind);
+  transport->addWidget(m_playButton);
+  transport->addWidget(stop);
+  auto *tempoDown = button("−", "tempoButton");
+  m_tempoControl = new QSpinBox;
+  m_tempoControl->setObjectName("tempoControl");
+  m_tempoControl->setRange(30, 260);
+  m_tempoControl->setValue(96);
+  m_tempoControl->setSuffix(" BPM");
+  m_tempoControl->setAlignment(Qt::AlignCenter);
+  m_tempoControl->setButtonSymbols(QAbstractSpinBox::NoButtons);
+  m_tempoControl->setFixedWidth(78);
+  m_tempoControl->setToolTip("Type an exact tempo; changes immediately retime "
+                             "sound, live score, and falling notes");
+  auto *tempoUp = button("＋", "tempoButton");
+  transport->addSpacing(7);
+  transport->addWidget(tempoDown);
+  transport->addWidget(m_tempoControl);
+  transport->addWidget(tempoUp);
+  songRow->addLayout(transport);
+  m_exportCombo = new QComboBox;
+  m_exportCombo->setObjectName("exportCombo");
+  for (auto item :
+       QVector<QPair<QString, QString>>{{"MIDI (.mid)", "mid"},
+                                        {"MusicXML", "musicxml"},
+                                        {"ABC notation", "abc"},
+                                        {"Audio (.wav)", "wav"},
+                                        {"Falling-note video (.mp4)", "video"},
+                                        {"Score (.svg)", "svg"},
+                                        {"Score (.png)", "png"},
+                                        {"Score (.pdf)", "pdf"},
+                                        {"VArpeggio project", "json"},
+                                        {"Note list (.csv)", "csv"}})
+    m_exportCombo->addItem(item.first, item.second);
+  auto *save = button("Save", "saveButton");
+  auto *saveLayout = new QHBoxLayout;
+  saveLayout->setSpacing(0);
+  saveLayout->addWidget(m_exportCombo);
+  saveLayout->addWidget(save);
+  songRow->addSpacing(24);
+  songRow->addLayout(saveLayout);
+  l->addLayout(songRow);
+  connect(rewind, &QPushButton::clicked, this, [this] {
+    stopPlayback(true);
+    rebuildPractice();
+  });
+  connect(stop, &QPushButton::clicked, this, [this] {
+    stopPlayback(true);
+    if (m_mode == Mode::Wait)
+      rebuildPractice();
+  });
+  connect(tempoDown, &QPushButton::clicked, this,
+          [this] { m_tempoControl->setValue(m_tempoControl->value() - 1); });
+  connect(tempoUp, &QPushButton::clicked, this,
+          [this] { m_tempoControl->setValue(m_tempoControl->value() + 1); });
+  connect(m_tempoControl, qOverload<int>(&QSpinBox::valueChanged), this,
+          &MainWindow::changeTempo);
+  connect(save, &QPushButton::clicked, this, &MainWindow::exportScore);
+  m_notice = new QFrame;
+  m_notice->setObjectName("notice");
+  auto *nl = new QHBoxLayout(m_notice);
+  nl->setContentsMargins(12, 8, 8, 8);
+  m_noticeText = label("");
+  m_noticeText->setWordWrap(true);
+  nl->addWidget(label("i", "noticeIcon"));
+  nl->addWidget(m_noticeText, 1);
+  m_noticeClose = button("×", "noticeClose");
+  nl->addWidget(m_noticeClose);
+  m_notice->hide();
+  l->addWidget(m_notice);
+  m_routineSession = new QFrame;
+  m_routineSession->setObjectName("routineSession");
+  auto *rsl = new QHBoxLayout(m_routineSession);
+  rsl->setContentsMargins(14, 9, 10, 9);
+  rsl->setSpacing(10);
+  auto *routineText = new QVBoxLayout;
+  routineText->setSpacing(1);
+  m_routineStepLabel = label("DAILY PLAN · STEP 1 OF 8", "routineSessionStep");
+  m_routineDetailLabel =
+      label("C major scale · Right hand", "routineSessionDetail");
+  routineText->addWidget(m_routineStepLabel);
+  routineText->addWidget(m_routineDetailLabel);
+  rsl->addLayout(routineText, 1);
+  m_routinePreviousButton = button("← Previous", "routineSessionSecondary");
+  m_routineNextButton = button("Next step →", "routineSessionPrimary");
+  auto *endRoutine = button("Close plan", "routineSessionSecondary");
+  for (auto *b : {m_routinePreviousButton, m_routineNextButton, endRoutine})
+    b->setMinimumHeight(34);
+  rsl->addWidget(m_routinePreviousButton);
+  rsl->addWidget(m_routineNextButton);
+  rsl->addWidget(endRoutine);
+  connect(m_routinePreviousButton, &QPushButton::clicked, this, [this] {
+    if (m_routineStep > 0)
+      loadRoutineStep(m_routineStep - 1);
+  });
+  connect(m_routineNextButton, &QPushButton::clicked, this, [this] {
+    if (m_routineStep < 7)
+      loadRoutineStep(m_routineStep + 1);
+    else
+      finishRoutinePlan();
+  });
+  connect(endRoutine, &QPushButton::clicked, this, [this] {
+    m_earTraining = false;
+    m_synth.stopSequence();
+    m_routineStep = -1;
+    m_routineSession->hide();
+    toast("Practice plan closed");
+  });
+  m_routineSession->hide();
+  l->addWidget(m_routineSession);
+  auto *scoreCard = makeCard("card");
+  auto *sl = new QVBoxLayout(scoreCard);
+  sl->setContentsMargins(0, 0, 0, 0);
+  sl->setSpacing(0);
+  auto *scoreTop = new QWidget;
+  scoreTop->setObjectName("cardTop");
+  auto *st = new QHBoxLayout(scoreTop);
+  st->setContentsMargins(16, 7, 13, 7);
+  m_barLabel = label("SCORE   ·   Bar 1 of 3", "sectionHeading");
+  st->addWidget(m_barLabel);
+  m_freeEditButton = button("✎  Edit staff…", "freeStaffButton");
+  m_freeEditButton->setToolTip("Change pitch, timing, length, hand, or remove "
+                               "notes from the Free Play grand staff");
+  m_freeClearButton = button("×  Clear staff", "freeStaffButton");
+  m_freeClearButton->setToolTip(
+      "Remove every note from the Free Play grand staff");
+  m_freeEditButton->hide();
+  m_freeClearButton->hide();
+  st->addWidget(m_freeEditButton);
+  st->addWidget(m_freeClearButton);
+  m_scoreDisplayButtons = new QButtonGroup(this);
+  m_scoreDisplayButtons->setExclusive(true);
+  m_scoreViewButton = button("Exact PDF", "scoreViewButton");
+  m_scoreViewButton->setCheckable(true);
+  m_scoreViewButton->setToolTip(
+      "Show the page-perfect original or engraved score");
+  m_liveScoreButton = button("Live follow", "scoreViewButton");
+  m_liveScoreButton->setCheckable(true);
+  m_liveScoreButton->setToolTip(
+      "Show simplified practice notation that moves with your place");
+  m_scoreDisplayButtons->addButton(m_scoreViewButton, 0);
+  m_scoreDisplayButtons->addButton(m_liveScoreButton, 1);
+  m_scoreViewButton->hide();
+  m_liveScoreButton->hide();
+  st->addWidget(m_scoreViewButton);
+  st->addWidget(m_liveScoreButton);
+  st->addStretch();
+  m_handButtons = new QButtonGroup(this);
+  m_handButtons->setExclusive(true);
+  auto *hands = new QWidget;
+  hands->setObjectName("hands");
+  auto *hl = new QHBoxLayout(hands);
+  hl->setContentsMargins(2, 2, 2, 2);
+  hl->setSpacing(0);
+  for (auto h : QVector<QPair<QString, int>>{
+           {"Right", 1}, {"Left", 0}, {"Together", 2}}) {
+    auto *b = button(h.first, "handButton");
+    b->setCheckable(true);
+    m_handButtons->addButton(b, h.second);
+    hl->addWidget(b);
+  }
+  m_handButtons->button(2)->setChecked(true);
+  st->addWidget(hands);
+  m_metronome = new QCheckBox("Metronome");
+  m_noteNames = new QCheckBox("Note names");
+  m_noteNames->setToolTip(
+      "Optional learning aid: show pitch names beside notes");
+  m_bubbles = new QCheckBox("Falling notes");
+  m_bubbles->setChecked(true);
+  for (auto *c : {m_metronome, m_noteNames, m_bubbles})
+    st->addWidget(c);
+  sl->addWidget(scoreTop);
+  m_scoreStack = new QStackedWidget;
+  m_score = new ScoreWidget;
+  m_scoreStack->addWidget(m_score);
+  m_pdfDocument = new QPdfDocument(this);
+  m_pdfView = new QPdfView;
+  m_pdfView->setDocument(m_pdfDocument);
+  m_pdfView->setPageMode(QPdfView::PageMode::MultiPage);
+  m_pdfView->setZoomMode(QPdfView::ZoomMode::FitToWidth);
+  m_scoreStack->addWidget(m_pdfView);
+  m_scoreStack->setMinimumHeight(520);
+  sl->addWidget(m_scoreStack, 1);
+  m_scoreHistoryRow = new QWidget;
+  m_scoreHistoryRow->setObjectName("scoreHistoryRow");
+  auto *historyLayout = new QHBoxLayout(m_scoreHistoryRow);
+  historyLayout->setContentsMargins(14, 5, 14, 6);
+  historyLayout->setSpacing(8);
+  historyLayout->addWidget(label("← EARLIER", "historyLabel"));
+  m_scoreHistoryBar = new QScrollBar(Qt::Horizontal);
+  m_scoreHistoryBar->setObjectName("scoreHistoryBar");
+  m_scoreHistoryBar->setRange(0, 0);
+  m_scoreHistoryBar->setSingleStep(1);
+  m_scoreHistoryBar->setPageStep(32);
+  m_scoreHistoryBar->setToolTip("Drag left to review earlier Free Play notes; "
+                                "move fully right to follow new notes again");
+  historyLayout->addWidget(m_scoreHistoryBar, 1);
+  historyLayout->addWidget(label("LATEST →", "historyLabel"));
+  m_scoreHistoryRow->hide();
+  sl->addWidget(m_scoreHistoryRow);
+  l->addWidget(scoreCard, 3);
+  auto *practice = new QHBoxLayout;
+  practice->setAlignment(Qt::AlignTop);
+  auto *flow = makeCard("flowCard");
+  flow->setFixedHeight(245);
+  auto *fl = new QVBoxLayout(flow);
+  fl->setContentsMargins(0, 0, 0, 0);
+  fl->setSpacing(0);
+  auto *flowTop = new QWidget;
+  flowTop->setObjectName("flowTop");
+  auto *ft = new QHBoxLayout(flowTop);
+  ft->setContentsMargins(16, 6, 14, 6);
+  ft->addWidget(
+      label("NOTE FLOW   ·   Notes move to the play line", "flowHeading"));
+  ft->addStretch();
+  ft->addWidget(label("● NEXT     ● PLAYED", "flowLegend"));
+  fl->addWidget(flowTop);
+  m_bubble = new BubbleWidget;
+  m_bubble->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+  fl->addWidget(m_bubble, 1);
+  practice->addWidget(flow, 1);
+  auto *coach = makeCard("coachCard");
+  coach->setFixedWidth(244);
+  coach->setFixedHeight(245);
+  auto *cl = new QVBoxLayout(coach);
+  cl->setContentsMargins(15, 14, 15, 12);
+  cl->addWidget(label("LIVE COACH", "sectionHeading"));
+  auto *next = new QFrame;
+  next->setObjectName("nextNote");
+  auto *nextL = new QVBoxLayout(next);
+  nextL->setContentsMargins(10, 7, 10, 7);
+  nextL->addWidget(label("UP NEXT", "miniHeading"));
+  m_nextNoteLabel = label("C4", "nextNoteText");
+  m_nextNoteLabel->setAlignment(Qt::AlignCenter);
+  m_nextNoteLabel->setWordWrap(true);
+  m_nextNoteLabel->setMinimumWidth(0);
+  m_nextNoteLabel->setFixedHeight(58);
+  m_nextNoteLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+  nextL->addWidget(m_nextNoteLabel);
+  cl->addWidget(next);
+  m_coachLabel = label(
+      "Find middle C\nTake your time. The music waits for you.", "coachText");
+  m_coachLabel->setWordWrap(true);
+  m_coachLabel->setMinimumHeight(35);
+  cl->addWidget(m_coachLabel);
+  cl->addStretch();
+  cl->addWidget(line());
+  auto *stats = new QHBoxLayout;
+  m_accuracyLabel = label("—\nACCURACY", "stat");
+  m_streakLabel = label("0\nSTREAK", "stat");
+  m_progressLabel = label("0%\nPROGRESS", "stat");
+  for (auto *s : {m_accuracyLabel, m_streakLabel, m_progressLabel}) {
+    s->setAlignment(Qt::AlignCenter);
+    stats->addWidget(s);
+  }
+  cl->addLayout(stats);
+  practice->addWidget(coach);
+  l->addLayout(practice);
+  auto *keyboard = makeCard("card");
+  keyboard->setFixedHeight(235);
+  auto *kl = new QVBoxLayout(keyboard);
+  kl->setContentsMargins(0, 0, 0, 0);
+  kl->setSpacing(0);
+  auto *kTop = new QWidget;
+  kTop->setObjectName("cardTop");
+  auto *kRows = new QVBoxLayout(kTop);
+  kRows->setContentsMargins(16, 6, 13, 7);
+  kRows->setSpacing(3);
+  auto *kt = new QHBoxLayout;
+  kt->setSpacing(8);
+  kt->addWidget(label("KEYBOARD", "sectionHeading"));
+  m_liveNoteLabel = label("Ready", "liveNote");
+  kt->addWidget(m_liveNoteLabel);
+  kt->addStretch();
+  kt->addWidget(
+      label("Computer keys: A W S E D F T G Y H U J K", "computerHint"));
+  m_recordButton = button("●  Record free play", "recordButton");
+  m_recordButton->setToolTip(
+      "Optional: capture this Free Play session and turn it into a score");
+  kt->addWidget(m_recordButton);
+  kRows->addLayout(kt);
+  auto *audioRow = new QHBoxLayout;
+  audioRow->setSpacing(8);
+  audioRow->addWidget(label("PIANO SOUND", "sectionHeading"));
+  m_instrumentCombo = new QComboBox;
+  m_instrumentCombo->setObjectName("instrumentCombo");
+  m_instrumentCombo->addItem("Kawai upright — bright",
+                             int(SynthInstrument::BrightPiano));
+  m_instrumentCombo->addItem("Kawai upright — natural",
+                             int(SynthInstrument::AcousticGrand));
+  m_instrumentCombo->addItem("Kawai upright — soft",
+                             int(SynthInstrument::SoftPiano));
+  m_instrumentCombo->setToolTip("Direct playback of the recorded Kawai upright "
+                                "piano; natural is the default");
+  m_instrumentCombo->setFixedWidth(190);
+  audioRow->addWidget(m_instrumentCombo);
+  m_sound = new QCheckBox("Sound");
+  m_sound->setChecked(true);
+  audioRow->addWidget(m_sound);
+  m_midiOutputCheck = new QCheckBox("Use keyboard MIDI sound");
+  m_midiOutputCheck->setToolTip(
+      "Send score notes through the adapter MIDI OUT to the keyboard MIDI IN; "
+      "VArpeggio's piano is silenced during score playback");
+  audioRow->addWidget(m_midiOutputCheck);
+  m_keyboardToneCombo = new QComboBox;
+  m_keyboardToneCombo->setObjectName("keyboardToneCombo");
+  const QStringList ctkTones = {
+      "PIANO 1",      "PIANO 2",      "HONKY-TONK",   "STUDIO PIANO",
+      "ELEC PIANO 1", "ELEC PIANO 2", "ELEC PIANO 3", "ELEC PIANO 4",
+      "HARPSICHORD",  "CLAVELECTRO",  "ELEC ORGAN 1", "ELEC ORGAN 2",
+      "ELEC ORGAN 3", "ELEC ORGAN 4", "CHURCH ORGAN", "PIPE ORGAN",
+      "REED ORGAN",   "ACCORDION",    "BANDONEON",    "HARMONICA",
+      "GUT GUITAR",   "ACOUS GUITAR", "JAZZ GUITAR",  "ELEC GUITAR",
+      "MUTE GUITAR",  "DIST GUITAR",  "WOOD BASS",    "ELEC BASS",
+      "SLAP BASS",    "BANJO",        "VIOLIN",       "CELLO",
+      "HARP",         "STRINGS 1",    "STRINGS 2",    "STRINGS 3",
+      "SYNTH-STR 1",  "SYNTH-STR 2",  "CHOIR",        "VOICE OOH",
+      "TRUMPET",      "TUBA",         "BRASS ENS",    "FR.HORN 1",
+      "FR.HORN 2",    "BRASS 1",      "BRASS 2",      "SYN-BRASS 1",
+      "SYN-BRASS 2",  "SYN-BRASS 3",  "SOPRANO SAX",  "ALTO SAX",
+      "TENOR SAX",    "OBOE",         "CLARINET",     "PICCOLO",
+      "FLUTE",        "RECORDER",     "PAN FLUTE",    "WHISTLE",
+      "SYN-LEAD 1",   "SYN-LEAD 2",   "SYN-LEAD 3",   "SYN-CALLIOPE",
+      "SYN-PAD 1",    "SYN-PAD 2",    "SYN-PAD 3",    "GLASS HMCA",
+      "COUNTRY FARM", "SYN-BASS",     "PEARL DROP",   "COSMIC SOUND",
+      "SOUNDTRACK",   "SPACE PAD",    "VOICE BASS",   "APPLAUSE",
+      "SYNTH-SFX",    "VEHICLE",      "PHONE",        "FUNNY",
+      "STR PIANO",    "STR E.PIANO",  "CHOIR E.P",    "CHOIR ORGAN",
+      "STR GUITAR",   "STR HARP",     "BRASS STR",    "VIB PAD",
+      "12 STR GTR",   "CHOIR STR",    "BASS/PIANO",   "BASS/E.PIANO",
+      "BASS/VIB",     "BASS/GUT GTR", "V.BASS/OOH",   "STR/PIANO",
+      "STR/TRUMPET",  "VIBRAPHONE",   "MARIMBA",      "PERCUSSION"};
+  for (int tone = 0; tone < ctkTones.size(); ++tone)
+    m_keyboardToneCombo->addItem(
+        QString("%1  %2").arg(tone, 2, 10, QChar('0')).arg(ctkTones[tone]),
+        tone);
+  m_keyboardToneCombo->setCurrentIndex(0);
+  m_keyboardToneCombo->setFixedWidth(174);
+  m_keyboardToneCombo->setToolTip(
+      "CTK-511 built-in tone. With the keyboard connected, selection works in "
+      "both directions. Set the keyboard TONE MAP to N for its native 00–99 "
+      "list.");
+  audioRow->addWidget(m_keyboardToneCombo);
+  m_volumeLabel = label("Volume 115%", "volumeLabel");
+  m_volumeLabel->setFixedWidth(88);
+  m_volumeLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+  audioRow->addWidget(m_volumeLabel);
+  m_volume = new QSlider(Qt::Horizontal);
+  m_volume->setObjectName("volumeSlider");
+  m_volume->setRange(0, 150);
+  m_volume->setValue(115);
+  m_volume->setFixedWidth(155);
+  m_volume->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+  m_volume->setToolTip("Playback and practice volume");
+  audioRow->addWidget(m_volume);
+  audioRow->addStretch();
+  kRows->addLayout(audioRow);
+  kl->addWidget(kTop);
+  m_piano = new PianoWidget;
+  kl->addWidget(m_piano, 1);
+  l->addWidget(keyboard, 2);
+  scroll->setWidget(page);
+  return scroll;
+}
 
-void MainWindow::buildMenus(){auto*file=menuBar()->addMenu("&File");auto*open=file->addAction("&Import score…",QKeySequence::Open);connect(open,&QAction::triggered,this,&MainWindow::importScore);auto*exp=file->addAction("&Export…",QKeySequence::SaveAs);connect(exp,&QAction::triggered,this,&MainWindow::exportScore);file->addSeparator();file->addAction("Quit",this,&QWidget::close,QKeySequence::Quit);auto*practice=menuBar()->addMenu("&Practice");practice->addAction("Daily practice plan…",this,&MainWindow::openRoutineDialog);practice->addAction("Ear training — Find the sound",this,[this]{m_routinePlanDate=QDate::currentDate();m_routineVariation=dailyRoutineTheme(m_routinePlanDate).chordOrder;loadRoutineStep(4);});practice->addSeparator();practice->addAction("Video/audio to notes…",this,&MainWindow::openVideoLab);practice->addAction("Open Director…",this,&MainWindow::openDetectorView);auto*help=menuBar()->addMenu("&Help");help->addAction("About Keyflow",this,[this]{QMessageBox::about(this,"About Keyflow","<b>Keyflow 0.1</b><br>Native MIDI practice and notation studio for KDE.<br><br>MIDI, MusicXML, ABC, PDF reference viewing, Free Play recording, hand practice, chord-aware Wait mode, ear training, falling notes, metronome, and common exports.");});}
+void MainWindow::buildMenus() {
+  auto *file = menuBar()->addMenu("&File");
+  auto *open = file->addAction("&Import score…", QKeySequence::Open);
+  connect(open, &QAction::triggered, this, &MainWindow::importScore);
+  auto *exp = file->addAction("&Export…", QKeySequence::SaveAs);
+  connect(exp, &QAction::triggered, this, &MainWindow::exportScore);
+  file->addSeparator();
+  file->addAction("Quit", this, &QWidget::close, QKeySequence::Quit);
+  auto *practice = menuBar()->addMenu("&Practice");
+  practice->addAction("Daily practice plan…", this,
+                      &MainWindow::openRoutineDialog);
+  practice->addAction("Ear training — Find the sound", this, [this] {
+    m_routinePlanDate = QDate::currentDate();
+    m_routineVariation = dailyRoutineTheme(m_routinePlanDate).chordOrder;
+    loadRoutineStep(4);
+  });
+  practice->addSeparator();
+  practice->addAction("Video/audio to notes…", this, &MainWindow::openVideoLab);
+  practice->addAction("Open Director…", this, &MainWindow::openDetectorView);
+  auto *help = menuBar()->addMenu("&Help");
+  help->addAction("About VArpeggio", this, [this] {
+    QMessageBox::about(
+        this, "About VArpeggio",
+        QString("<h2>VArpeggio</h2><p><b>Piano Practice &amp; Notation "
+                "Studio</b></p><p>Version %1</p><p>Built by "
+                "Voncloft<br>Copyright © 2026 Voncloft</p><p>VArpeggio is free "
+                "and open-source software released under the GNU General Public "
+                "License, version 3. License and third-party notices are included "
+                "with the application.</p>")
+            .arg(VARPEGGIO_VERSION));
+  });
+}
 
-void MainWindow::applyStyle(){setStyleSheet(R"(
+void MainWindow::applyStyle() {
+  setStyleSheet(R"(
 *{font-family:"Noto Sans","Manrope",sans-serif;font-size:12px;color:#18312d}QMainWindow{background:#f5f1e8}QMenuBar{background:#0e2420;color:#cbdcd7;padding:2px 8px}QMenuBar::item:selected,QMenu{background:#203d37;color:white}QMenu::item:selected{background:#2d7d70}QMessageBox,QDialog,QProgressDialog{background:#f5f1e8;color:#18312d}QMessageBox QLabel,QDialog QLabel,QProgressDialog QLabel{color:#18312d;background:transparent}QMessageBox QPushButton,QDialogButtonBox QPushButton,QProgressDialog QPushButton{color:#18312d;background:#fffefa;border:1px solid #b8b4aa;border-radius:7px;padding:7px 13px;min-width:80px}QMessageBox QPushButton:hover,QDialogButtonBox QPushButton:hover,QProgressDialog QPushButton:hover{color:white;background:#2d7d70;border-color:#2d7d70}QMessageBox QPushButton:default,QDialogButtonBox QPushButton:default{color:white;background:#2d7d70;border-color:#2d7d70;font-weight:700}#header{background:#112824;border-bottom:1px solid #28433d}#brand{color:white;font-size:20px;font-weight:800}#brandMark{color:#ef775f;font-size:23px}#midiButton{color:#dceae6;background:#1d3933;border:1px solid #3b5751;border-radius:17px;padding:8px 14px}#midiButton[connected="true"]{color:#8be0c9;border-color:#4f9686}#roundButton,#avatar{min-width:32px;max-width:32px;min-height:32px;max-height:32px;border-radius:16px;color:#dceae6;background:#203b35;border:1px solid #3b5751}#avatar{color:#17312c;background:#bfe3d9;font-weight:800}#sidebar{background:#17312c}#sideHeading{color:#718f87;font-family:"Noto Sans Mono";font-size:9px;font-weight:700;letter-spacing:2px;padding:5px 9px}#modeButton,#libraryButton{color:#d5e2df;text-align:left;background:transparent;border:0;border-radius:8px;padding:7px 10px}#modeButton{font-weight:700}#modeButton:checked{color:white;background:#24423c;border-left:3px solid #ef775f}#modeButton:hover,#libraryButton:hover{background:#203d37}#importButton{color:#a9c2bc;background:transparent;border:1px dashed #4b6861;border-radius:8px;padding:9px}#dailyCard{background:#203c36;border:1px solid #2c4a43;border-radius:10px;margin-top:10px}#dailyTitle{color:#e4eeeb;font-weight:700}#dailyTime{color:#ffab98;font-size:9px}#weekDots{color:#70a597;letter-spacing:4px}#routineParts{color:#6f8e86;font-size:7px}#routineButton{color:#add4c9;text-align:left;background:transparent;border:0;border-top:1px solid #36524c;padding-top:7px}#labButton{color:#d6e4e0;text-align:left;background:#2b3c35;border:1px solid #64483e;border-radius:9px;padding:10px}#workspaceScroll,#workspace{background:#f5f1e8}#eyebrow,#sectionHeading{color:#2d7d70;font-family:"Noto Sans Mono";font-size:9px;font-weight:700;letter-spacing:1px}#songTitle{font-size:29px;font-weight:800;background:transparent;border:0;padding:0}#meta{color:#72807d;font-size:10px}#transportButton,#tempoButton{min-width:32px;max-width:32px;min-height:32px;max-height:32px;border-radius:16px;color:#2d7d70;background:#fffefa;border:1px solid #dedbd1}#playButton{min-width:92px;max-width:92px;min-height:42px;max-height:42px;border-radius:21px;color:white;background:#2d7d70;border:0;font-size:12px;font-weight:800}#playButton:hover{background:#256b61}#tempoText{font-weight:800;padding:0 3px}#exportCombo{background:#fffefa;border:1px solid #dedbd1;border-radius:7px 0 0 7px;padding:7px;min-width:120px}#saveButton{color:white;background:#173f39;border:0;border-radius:0 7px 7px 0;padding:8px 13px;font-weight:700}#notice{background:#fff7d2;border:1px solid #ddc673;border-radius:8px}#noticeIcon{min-width:19px;max-width:19px;min-height:19px;max-height:19px;border:1px solid #c6ad54;border-radius:9px;text-align:center;color:#765f22}#noticeClose{border:0;background:transparent;font-size:17px}#card,#coachCard{background:#fffefa;border:1px solid #dedbd1;border-radius:12px}#cardTop{background:#fffefa;border-bottom:1px solid #e8e4db}#hands{background:#eeece5;border-radius:7px}#handButton{background:transparent;border:0;border-radius:5px;padding:4px 7px;color:#7a8582;font-size:9px}#handButton:checked{color:white;background:#2d7d70}QCheckBox{spacing:6px;font-size:9px;color:#687671}QCheckBox::indicator{width:25px;height:13px;border-radius:7px;background:#c7cdca}QCheckBox::indicator:checked{background:#2d7d70;border:3px solid #bfe3d9}#flowCard{background:#152e29;border:1px solid #223f39;border-radius:12px}#flowTop{background:#152e29;border-bottom:1px solid #29443e}#flowHeading{color:#83c6b7;font-family:"Noto Sans Mono";font-size:9px}#flowLegend{color:#79928b;font-size:8px}#nextNote{background:#eff1e9;border-left:4px solid #ef775f;border-radius:7px}#miniHeading{color:#89938f;font-family:"Noto Sans Mono";font-size:7px}#nextNoteText{font-family:"Noto Serif";font-size:38px;font-weight:700;color:#173f39}#coachText{color:#71807c;font-size:10px}#stat{font-weight:700;font-size:12px;color:#18312d}#liveNote{color:#71817d;font-size:10px}#computerHint{color:#929c99;font-family:"Noto Sans Mono";font-size:8px}#recordButton{color:#bd5945;background:#fff7f5;border:1px solid #e4a99d;border-radius:7px;padding:6px 10px}#recordButton[recording="true"]{color:white;background:#ef775f}#divider{color:#304b45}QScrollBar:vertical{width:9px;background:#eeeae1}QScrollBar::handle:vertical{background:#a9b4b0;border-radius:4px;min-height:30px}QToolTip{color:white;background:#17312c;border:1px solid #4b6861;padding:5px}
-)");setStyleSheet(styleSheet()+R"(
+)");
+  setStyleSheet(styleSheet() + R"(
 #scoreViewButton{color:#2d7d70;background:#eef7f4;border:1px solid #9fc9be;border-radius:6px;padding:4px 8px;font-size:9px}
 #scoreViewButton:checked{color:white;background:#2d7d70;border-color:#2d7d70;font-weight:700}
 #scoreViewButton:disabled{color:#9aa7a3;background:#f0f1ed;border-color:#d7ddd9}
@@ -543,152 +978,635 @@ void MainWindow::applyStyle(){setStyleSheet(R"(
 #routineSessionSecondary{color:#31534d;background:#fffefa;border:1px solid #aebdb8;border-radius:7px;padding:6px 10px;font-weight:700}
 #routineSessionSecondary:hover{background:#f3faf7;border-color:#2d7d70}
 #routineSessionSecondary:disabled{color:#9aa7a3;background:#edf1ee;border-color:#d1dad6}
-)");}
-
-void MainWindow::connectUi(){
-    m_scoreStack->setMinimumHeight(520);
-    m_sourceAudio->setText("Hear original recording (reference only)");
-    m_sourceAudio->setToolTip("Reference only; leave off to hear the generated staff notes");
-    QSettings audioSettings("Keyflow","Keyflow");
-    int savedInstrument=audioSettings.value("audio/instrument",int(SynthInstrument::AcousticGrand)).toInt();
-    // Existing installs defaulted to the narrow concert patch.  Migrate once
-    // to the tutorial grand selected from the source comparison; subsequent
-    // user choices remain untouched.
-    if(audioSettings.value("audio/pianoProfileVersion",0).toInt()<3){savedInstrument=int(SynthInstrument::AcousticGrand);audioSettings.setValue("audio/instrument",savedInstrument);audioSettings.setValue("audio/pianoProfileVersion",3);}
-    const int savedInstrumentIndex=m_instrumentCombo->findData(savedInstrument);m_instrumentCombo->setCurrentIndex(savedInstrumentIndex<0?0:savedInstrumentIndex);m_synth.setInstrument(SynthInstrument(m_instrumentCombo->currentData().toInt()));
-    const int savedKeyboardTone=qBound(0,audioSettings.value("midi/ctk511Tone",0).toInt(),99);
-    m_keyboardToneCombo->setCurrentIndex(savedKeyboardTone);
-    if(audioSettings.value("midi/useOutput",false).toBool()){
-        QString error;
-        if(m_midiOutput.openFirst(&error)){m_midiOutputCheck->setChecked(true);m_midiOutput.programChange(savedKeyboardTone);}
-        else audioSettings.setValue("midi/useOutput",false);
-    }
-    connect(m_keyboardToneCombo,&QComboBox::currentIndexChanged,this,[this](int){const int tone=m_keyboardToneCombo->currentData().toInt();QSettings("Keyflow","Keyflow").setValue("midi/ctk511Tone",tone);if(m_midiOutputCheck->isChecked()&&m_midiOutput.isOpen())m_midiOutput.programChange(tone);toast(QString("CTK-511 tone %1 selected").arg(m_keyboardToneCombo->currentText()));});
-    connect(m_modeButtons,&QButtonGroup::idClicked,this,[this](int id){setMode(Mode(id));});connect(m_handButtons,&QButtonGroup::idClicked,this,[this](int id){setHandFilter(id==2?-1:id);});connect(m_scoreDisplayButtons,&QButtonGroup::idClicked,this,[this](int id){m_scoreStack->setCurrentWidget(id==0?static_cast<QWidget*>(m_pdfView):static_cast<QWidget*>(m_score));});connect(m_playButton,&QPushButton::clicked,this,&MainWindow::togglePlayback);connect(m_recordButton,&QPushButton::clicked,this,&MainWindow::toggleRecord);connect(m_freeEditButton,&QPushButton::clicked,this,&MainWindow::editFreePlayStaff);connect(m_freeClearButton,&QPushButton::clicked,this,&MainWindow::clearFreePlayStaff);connect(m_detectorButton,&QPushButton::clicked,this,&MainWindow::openDetectorView);connect(m_piano,&PianoWidget::notePressed,this,&MainWindow::userNoteOn);connect(m_piano,&PianoWidget::noteReleased,this,&MainWindow::userNoteOff);connect(m_noteNames,&QCheckBox::toggled,m_score,&ScoreWidget::setShowNames);connect(m_bubbles,&QCheckBox::toggled,m_bubble,&BubbleWidget::setBubblesVisible);connect(m_sound,&QCheckBox::toggled,this,[this](bool on){m_synth.setMuted(!on);m_sourceAudioOutput->setMuted(!on);});connect(m_instrumentCombo,&QComboBox::currentIndexChanged,this,[this](int){const auto instrument=SynthInstrument(m_instrumentCombo->currentData().toInt());m_synth.setInstrument(instrument);QSettings("Keyflow","Keyflow").setValue("audio/instrument",int(instrument));toast(m_instrumentCombo->currentText()+" selected");});connect(m_volume,&QSlider::valueChanged,this,[this](int value){m_synth.setVolume(value/100.0);m_sourceAudioOutput->setVolume(qBound(0.0,value/100.0,1.0));if(m_midiOutputCheck->isChecked()&&m_midiOutput.isOpen())m_midiOutput.channelVolume(qRound(value*127.0/150.0));m_volumeLabel->setText(QString(m_midiOutputCheck->isChecked()?"Keyboard %1%":"Volume %1%").arg(value));});connect(m_midiOutputCheck,&QCheckBox::toggled,this,[this](bool checked){
-        if(m_playing||m_playbackPaused)stopPlayback(true);
-        if(checked&&!m_midiOutput.isOpen()){
-            QString error;if(!m_midiOutput.openFirst(&error)){const QSignalBlocker blocker(m_midiOutputCheck);m_midiOutputCheck->setChecked(false);QSettings("Keyflow","Keyflow").setValue("midi/useOutput",false);showNotice(error+" Connect adapter MIDI OUT to keyboard MIDI IN, then try again.",true);return;}
-        }
-        if(!checked){m_midiOutput.allNotesOff();m_midiOutput.close();}
-        QSettings("Keyflow","Keyflow").setValue("midi/useOutput",checked);
-        if(checked){m_midiOutput.programChange(m_keyboardToneCombo->currentData().toInt());m_midiOutput.channelVolume(qRound(m_volume->value()*127.0/150.0));}
-        m_instrumentCombo->setVisible(!checked);m_keyboardToneCombo->setVisible(checked);m_volumeLabel->setText(QString(checked?"Keyboard %1%":"Volume %1%").arg(m_volume->value()));
-        toast(checked?"Score playback will use "+m_midiOutput.activeDevice()+" — set loudness on the keyboard":"Score playback will use Keyflow's piano");
-    });connect(m_sourceAudio,&QCheckBox::toggled,this,[this](bool){if(m_playing||m_playbackPaused)stopPlayback(true);updatePrimaryButton();});connect(m_metronome,&QCheckBox::toggled,this,[this](bool){m_metroClock.restart();m_lastMetroBeat=-1;});connect(m_noticeClose,&QPushButton::clicked,m_notice,&QWidget::hide);connect(m_titleEdit,&QLineEdit::textChanged,this,[this](const QString&t){m_title=t;});
-    m_instrumentCombo->setVisible(!m_midiOutputCheck->isChecked());
-    m_keyboardToneCombo->setVisible(m_midiOutputCheck->isChecked());
-    connect(m_scoreHistoryBar,&QScrollBar::valueChanged,this,[this](int value){if(m_mode!=Mode::Free)return;m_freePlayAutoFollow=value>=m_scoreHistoryBar->maximum();m_score->setFollowBeat(value/8.0);if(!m_freePlayAutoFollow)m_barLabel->setText("FREE PLAY   ·   Viewing earlier notes — drag to Latest for live follow");else m_barLabel->setText("FREE PLAY   ·   Live grand staff");m_score->repaint();});
-    connect(m_score,&ScoreWidget::seekPreviewChanged,this,[this](double beat){if(m_mode==Mode::Free)return;if(m_playing)pausePlayback();m_score->setPlayedBeat(beat);m_bubble->setPlayhead(beat);});
-    connect(m_score,&ScoreWidget::seekRequested,this,[this](double beat){if(m_mode!=Mode::Free)seekPlayback(beat);});
-    connect(m_score,&ScoreWidget::editCursorChanged,this,[this](double beat){
-        if(m_mode!=Mode::Free)return;
-        if(m_recording||!m_freePlayStarts.isEmpty()){m_score->setEditCursorBeat(m_freePlayEditBeat);toast("Release the keys and stop recording before moving the insertion line");return;}
-        m_freePlayEditBeat=beat;m_freePlayEditAdvance=0;m_freePlayEditPressMs.clear();m_freePlayAutoFollow=false;
-        m_score->setFollowBeat(beat);const QString position=scorePosition(beat,m_freePlayTimeSignatures);m_barLabel->setText(m_freePlayGroupEntry?"FREE PLAY   ·   "+position+" · GROUPING · Right-click to ungroup":"FREE PLAY   ·   "+position+" · Each note steps forward");
-    });
-    connect(m_score,&ScoreWidget::noteDeleteRequested,this,[this](int index){
-        if(m_mode!=Mode::Free||index<0||index>=m_freePlayNotes.size())return;
-        if(m_recording||!m_freePlayStarts.isEmpty()){toast("Release the keys and stop recording before deleting a note");return;}
-        const QString removed=MusicDocument::noteName(m_freePlayNotes[index].note);m_freePlayNotes.removeAt(index);
-        syncFreePlayScore();m_score->setNotes(m_freePlayNotes);m_bubble->setNotes(m_freePlayNotes);updateFreePlayHistory(false);m_score->setEditCursorBeat(m_freePlayEditBeat);toast("Deleted "+removed+" from the staff");
-    });
-    connect(m_score,&ScoreWidget::noteContextRequested,this,[this](int index,const QPoint &globalPosition){
-        if(m_mode!=Mode::Free||index<0||index>=m_freePlayNotes.size()||m_recording||!m_freePlayStarts.isEmpty())return;
-        QMenu menu(this);QMenu *length=menu.addMenu("Note length");
-        const QVector<QPair<QString,double>> lengths={{"Sixteenth note — 1/4 beat",.25},{"Eighth note — 1/2 beat",.5},{"Dotted eighth — 3/4 beat",.75},{"Quarter note — 1 beat",1.0},{"Dotted quarter — 1 1/2 beats",1.5},{"Half note — 2 beats",2.0},{"Dotted half — 3 beats",3.0},{"Whole note — 4 beats",4.0}};
-        for(const auto &choice:lengths){QAction *action=length->addAction(choice.first);action->setData("duration:"+QString::number(choice.second,'f',2));action->setCheckable(true);action->setChecked(qAbs(m_freePlayNotes[index].duration-choice.second)<.04);}
-        QMenu *accidental=menu.addMenu("Accidental");
-        for(const auto &choice:QVector<QPair<QString,int>>{{"Automatic for key signature",int(AccidentalMark::Automatic)},{"♮  Natural",int(AccidentalMark::Natural)},{"♯  Sharp",int(AccidentalMark::Sharp)},{"♭  Flat",int(AccidentalMark::Flat)}}){QAction *action=accidental->addAction(choice.first);action->setData("accidental:"+QString::number(choice.second));action->setCheckable(true);action->setChecked(int(m_freePlayNotes[index].accidental)==choice.second);}
-        menu.addSeparator();QAction *group=menu.addAction(m_freePlayGroupEntry?"Done grouping — resume stepping":"Group notes with this note");group->setData("toggle-group");
-        QAction *remove=menu.addAction("Delete "+MusicDocument::noteName(m_freePlayNotes[index].note));remove->setData("delete");
-        QAction *selected=menu.exec(globalPosition);if(!selected)return;const QString command=selected->data().toString();
-        if(command=="toggle-group"){setFreePlayGrouping(!m_freePlayGroupEntry,m_freePlayNotes[index].start);}
-        else if(command=="delete"){const QString name=MusicDocument::noteName(m_freePlayNotes[index].note);m_freePlayNotes.removeAt(index);toast("Deleted "+name+" from the staff");}
-        else if(command.startsWith("duration:")){
-            const double duration=qMax(.125,command.mid(9).toDouble());m_freePlayNotes[index].duration=duration;
-            toast("Changed to "+selected->text());
-        }else if(command.startsWith("accidental:")){m_freePlayNotes[index].accidental=AccidentalMark(command.mid(11).toInt());toast("Updated the written accidental for this played pitch");}
-        syncFreePlayScore();m_score->setNotes(m_freePlayNotes);m_bubble->setNotes(m_freePlayNotes);updateFreePlayHistory(false);m_score->setEditCursorBeat(m_freePlayEditBeat);
-    });
-    connect(m_score,&ScoreWidget::restDeleteRequested,this,[this](int index){if(m_mode!=Mode::Free||index<0||index>=m_freePlayRests.size()||m_recording||!m_freePlayStarts.isEmpty())return;m_freePlayRests.removeAt(index);m_score->setRests(m_freePlayRests);syncFreePlayScore();updateFreePlayHistory(false);toast("Deleted the rest from the staff");});
-    connect(m_score,&ScoreWidget::staffContextRequested,this,[this](double beat,const QPoint &globalPosition){
-        if(m_mode!=Mode::Free||m_recording||!m_freePlayStarts.isEmpty())return;
-        QMenu menu(this);menu.setTitle(QString("Staff at beat %1").arg(beat,0,'f',3));QAction *group=menu.addAction(m_freePlayGroupEntry?"Done grouping — resume stepping":"Group notes at this position");group->setData("toggle-group");menu.addSeparator();
-        QMenu *meter=menu.addMenu("Time signature here");
-        for(const QString &value:{QStringLiteral("2/4"),QStringLiteral("3/4"),QStringLiteral("4/4"),QStringLiteral("5/4"),QStringLiteral("6/8"),QStringLiteral("9/8"),QStringLiteral("12/8")}){QAction *action=meter->addAction(value);action->setData("meter:"+value);}
-        QMenu *key=menu.addMenu("Key signature here");
-        const QVector<QPair<QString,int>> keys={{"C♭ major / A♭ minor — 7 flats",-7},{"G♭ major / E♭ minor — 6 flats",-6},{"D♭ major / B♭ minor — 5 flats",-5},{"A♭ major / F minor — 4 flats",-4},{"E♭ major / C minor — 3 flats",-3},{"B♭ major / G minor — 2 flats",-2},{"F major / D minor — 1 flat (B♭)",-1},{"C major / A minor — no sharps or flats",0},{"G major / E minor — 1 sharp (F♯)",1},{"D major / B minor — 2 sharps",2},{"A major / F♯ minor — 3 sharps",3},{"E major / C♯ minor — 4 sharps",4},{"B major / G♯ minor — 5 sharps",5},{"F♯ major / D♯ minor — 6 sharps",6},{"C♯ major / A♯ minor — 7 sharps",7}};
-        for(const auto &choice:keys){QAction *action=key->addAction(choice.first);action->setData("key:"+QString::number(choice.second));}
-        QMenu *restMenu=menu.addMenu("Insert rest");for(const auto &staff:QVector<QPair<QString,QString>>{{"Treble staff","R"},{"Bass staff","L"}}){QMenu *staffMenu=restMenu->addMenu(staff.first);for(const auto &length:QVector<QPair<QString,double>>{{"Eighth rest",.5},{"Quarter rest",1.0},{"Half rest",2.0},{"Whole rest",4.0}}){QAction *action=staffMenu->addAction(length.first);action->setData(QString("rest:%1:%2").arg(staff.second).arg(length.second));}}
-        const bool hasRepeat=std::any_of(m_freePlayRepeatEnds.cbegin(),m_freePlayRepeatEnds.cend(),[beat](double value){return qAbs(value-beat)<.04;});
-        QAction *repeat=menu.addAction(hasRepeat?"Remove repeat end :||":"Add repeat end :||");repeat->setData("repeat");
-        const auto meterAt=std::find_if(m_freePlayTimeSignatures.cbegin(),m_freePlayTimeSignatures.cend(),[beat](const auto &value){return qAbs(value.beat-beat)<.04;});
-        if(beat>.001&&meterAt!=m_freePlayTimeSignatures.cend()){QAction *removeMeter=menu.addAction("Remove time signature change");removeMeter->setData("remove-meter");}
-        const auto keyAt=std::find_if(m_freePlayKeySignatures.cbegin(),m_freePlayKeySignatures.cend(),[beat](const auto &value){return qAbs(value.beat-beat)<.04;});
-        if(beat>.001&&keyAt!=m_freePlayKeySignatures.cend()){QAction *removeKey=menu.addAction("Remove key signature change");removeKey->setData("remove-key");}
-        QAction *selected=menu.exec(globalPosition);if(!selected)return;const QString command=selected->data().toString();
-        if(command=="toggle-group"){
-            setFreePlayGrouping(!m_freePlayGroupEntry,beat);
-        }else if(command.startsWith("meter:")){
-            const QStringList pieces=command.mid(6).split('/');if(pieces.size()!=2)return;
-            m_freePlayTimeSignatures.erase(std::remove_if(m_freePlayTimeSignatures.begin(),m_freePlayTimeSignatures.end(),[beat](const auto &value){return qAbs(value.beat-beat)<.04;}),m_freePlayTimeSignatures.end());
-            m_freePlayTimeSignatures.append({beat,pieces[0].toInt(),pieces[1].toInt()});std::sort(m_freePlayTimeSignatures.begin(),m_freePlayTimeSignatures.end(),[](const auto&a,const auto&b){return a.beat<b.beat;});toast("Added "+pieces.join('/')+" at the orange line");
-        }else if(command=="remove-meter"){
-            m_freePlayTimeSignatures.erase(std::remove_if(m_freePlayTimeSignatures.begin(),m_freePlayTimeSignatures.end(),[beat](const auto &value){return qAbs(value.beat-beat)<.04&&value.beat>.001;}),m_freePlayTimeSignatures.end());toast("Removed the time signature change");
-        }else if(command.startsWith("key:")){
-            const int fifths=qBound(-7,command.mid(4).toInt(),7);m_freePlayKeySignatures.erase(std::remove_if(m_freePlayKeySignatures.begin(),m_freePlayKeySignatures.end(),[beat](const auto &value){return qAbs(value.beat-beat)<.04;}),m_freePlayKeySignatures.end());m_freePlayKeySignatures.append({beat,fifths});std::sort(m_freePlayKeySignatures.begin(),m_freePlayKeySignatures.end(),[](const auto&a,const auto&b){return a.beat<b.beat;});toast(fifths==-1?"Added one flat — every B is flat until the next key change":"Added the key signature at the orange line");
-        }else if(command=="remove-key"){
-            m_freePlayKeySignatures.erase(std::remove_if(m_freePlayKeySignatures.begin(),m_freePlayKeySignatures.end(),[beat](const auto &value){return qAbs(value.beat-beat)<.04&&value.beat>.001;}),m_freePlayKeySignatures.end());toast("Removed the key signature change");
-        }else if(command.startsWith("rest:")){
-            const QStringList pieces=command.split(':');if(pieces.size()!=3)return;const Hand hand=pieces[1]=="L"?Hand::Left:Hand::Right;const double duration=pieces[2].toDouble();const bool overlaps=std::any_of(m_freePlayNotes.cbegin(),m_freePlayNotes.cend(),[beat,duration,hand](const auto &note){return note.hand==hand&&note.start<beat+duration-.001&&note.start+note.duration>beat+.001;});if(overlaps){showNotice("That staff already has a note during this rest. Delete or move the note first.",true);return;}m_freePlayRests.erase(std::remove_if(m_freePlayRests.begin(),m_freePlayRests.end(),[beat,hand](const auto &value){return qAbs(value.beat-beat)<.04&&value.hand==hand;}),m_freePlayRests.end());m_freePlayRests.append({beat,duration,hand});std::sort(m_freePlayRests.begin(),m_freePlayRests.end(),[](const auto&a,const auto&b){return a.beat<b.beat;});m_freePlayEditBeat=beat;m_score->setEditCursorBeat(m_freePlayEditBeat);toast("Added the rest at the orange line");
-        }else if(command=="repeat"){
-            if(hasRepeat){m_freePlayRepeatEnds.erase(std::remove_if(m_freePlayRepeatEnds.begin(),m_freePlayRepeatEnds.end(),[beat](double value){return qAbs(value-beat)<.04;}),m_freePlayRepeatEnds.end());toast("Removed the repeat end");}
-            else{m_freePlayRepeatEnds.append(beat);std::sort(m_freePlayRepeatEnds.begin(),m_freePlayRepeatEnds.end());toast("Added repeat end :|| at the orange line");}
-        }
-        m_score->setTimeSignatures(m_freePlayTimeSignatures);m_score->setKeySignatures(m_freePlayKeySignatures);m_score->setRests(m_freePlayRests);m_score->setRepeatEnds(m_freePlayRepeatEnds);syncFreePlayScore();updateFreePlayHistory(false);
-    });
-    connect(m_sourceAudio,&QCheckBox::toggled,this,[this](bool checked){
-        if(checked){if(m_mode!=Mode::Listen)setMode(Mode::Listen);toast("Original reference selected — this is not the generated staff playback");}
-        else if(m_sourceAudio->isEnabled())toast("Generated-score playback selected");
-    });
-    m_sourceAudioOutput->setVolume(1.0);m_sourceAudioOutput->setMuted(!m_sound->isChecked());
-    connect(m_sourcePlayer,&QMediaPlayer::errorOccurred,this,[this](QMediaPlayer::Error,const QString &message){if(!message.isEmpty()&&m_usingImportedMediaAudio)showNotice("The original recording could not play: "+message,true);});
-    connect(m_sourcePlayer,&QMediaPlayer::mediaStatusChanged,this,[this](QMediaPlayer::MediaStatus status){
-        if((status==QMediaPlayer::LoadedMedia||status==QMediaPlayer::BufferedMedia)&&m_playing&&m_usingImportedMediaAudio){const qint64 wanted=m_importedMediaStartMs+qRound64(m_playbackOffsetSeconds*1000.0);if(qAbs(m_sourcePlayer->position()-wanted)>150)m_sourcePlayer->setPosition(wanted);if(m_sourcePlayer->playbackState()!=QMediaPlayer::PlayingState)m_sourcePlayer->play();}
-        else if(status==QMediaPlayer::EndOfMedia&&m_usingImportedMediaAudio)stopPlayback(true);
-    });
-    connect(&m_midi,&MidiInput::noteOn,this,&MainWindow::userNoteOn);connect(&m_midi,&MidiInput::noteOff,this,&MainWindow::userNoteOff);connect(&m_midi,&MidiInput::sustain,this,[this](bool down){m_sustain=down;if(!down){for(int n:m_sustainedNotes){if(m_userVoiceIds.contains(n))m_synth.noteOffVoice(m_userVoiceIds.take(n));m_piano->setActive(n,false);}m_sustainedNotes.clear();}});connect(&m_midi,&MidiInput::programChanged,this,[this](int program){if(program<0||program>=m_keyboardToneCombo->count())return;const QSignalBlocker blocker(m_keyboardToneCombo);m_keyboardToneCombo->setCurrentIndex(program);QSettings("Keyflow","Keyflow").setValue("midi/ctk511Tone",program);toast("Keyboard selected "+m_keyboardToneCombo->currentText());});connect(&m_midi,&MidiInput::devicesChanged,this,[this](const QStringList&devices){bool ok=!devices.isEmpty();m_midiButton->setProperty("connected",ok);m_midiButton->style()->unpolish(m_midiButton);m_midiButton->style()->polish(m_midiButton);m_midiButton->setText(ok?"●   "+devices.first():"●   Connect MIDI keyboard");m_midiLabel=nullptr;if(ok)toast("MIDI connected: "+devices.first());});connect(&m_midi,&MidiInput::midiError,this,[this](const QString&e){showNotice(e,true);});connect(m_midiButton,&QPushButton::clicked,this,[this]{const auto inputs=m_midi.connectedDevices();const auto outputs=m_midiOutput.availableDevices();if(inputs.isEmpty()&&outputs.isEmpty()){showNotice("No MIDI adapter is visible yet. Connect it by USB and turn on the keyboard.");return;}QString text="MIDI IN to Keyflow:\n"+(inputs.isEmpty()?QString("None"):inputs.join("\n"))+"\n\nMIDI OUT to keyboard:\n"+(outputs.isEmpty()?QString("None"):outputs.join("\n"))+"\n\nThe CTK-511 tone selector follows Program Change messages in both directions. Use TONE MAP N on the keyboard for the native 00–99 list.";QMessageBox::information(this,"MIDI keyboard",text);});
+)");
 }
 
-void MainWindow::setMode(Mode mode){
-    const Mode previous=m_mode;
-    if(m_earTraining&&mode!=Mode::Wait){m_earTraining=false;m_synth.stopSequence();}
-    if(m_recording&&mode!=Mode::Free)finishRecording();
-    if(m_playing||m_playbackPaused)stopPlayback(false);
-    m_mode=mode;m_bubble->setWaitMode(mode==Mode::Wait);
-    QString text;switch(mode){case Mode::Wait:text="WAIT MODE · MUSIC STOPS FOR YOU";break;case Mode::Listen:text="LISTEN · HEAR THE SHEET";break;case Mode::Follow:text="PLAY ALONG · FOLLOW TEMPO";break;case Mode::Free:text="FREE PLAY · LIVE NOTATION";break;}
-    m_modeLabel->setText(text);if(auto*b=m_modeButtons->button(int(mode)))b->setChecked(true);
-    m_recordButton->setVisible(mode==Mode::Free);
-    m_freeEditButton->hide();
-    m_freeClearButton->setVisible(mode==Mode::Free);
-    m_scoreHistoryRow->setVisible(mode==Mode::Free);
-    m_score->setLiveWritingMode(mode==Mode::Free);
-    m_score->setEditEnabled(mode==Mode::Free);
-    m_score->setSeekEnabled(mode!=Mode::Free);
-    if(mode==Mode::Free&&previous!=Mode::Free){
-        m_freePlayNotes.clear();m_freePlayStarts.clear();m_freePlayIndexes.clear();m_freePlayPressMs.clear();m_freePlayEditPressMs.clear();m_freePlayApplied=false;m_freePlayAutoFollow=true;m_freePlayGroupEntry=false;m_freePlayOffsetBeat=0;m_freePlayEditBeat=-1;m_freePlayEditAdvance=0;m_freePlayTimeSignatures={{0.0,4,4}};m_freePlayKeySignatures={{0.0,0}};m_freePlayRests.clear();m_freePlayRepeatEnds.clear();m_freePlayClock.invalidate();
-        m_handFilter=-1;m_score->setHandFilter(-1);m_bubble->setHandFilter(-1);if(auto*b=m_handButtons->button(2))b->setChecked(true);
-        m_score->setNotes(m_freePlayNotes);m_score->setEditCursorBeat(-1);m_score->setTimeSignatures(m_freePlayTimeSignatures);m_score->setKeySignatures(m_freePlayKeySignatures);m_score->setRests(m_freePlayRests);m_score->setRepeatEnds(m_freePlayRepeatEnds);m_bubble->setNotes(m_freePlayNotes);m_score->setExpected({},0);m_bubble->setExpected({},0);m_score->setFollowBeat(0);m_bubble->setPlayhead(0);m_barLabel->setText("FREE PLAY   ·   Click staff to insert · Right-click for notation tools");
-        m_noteCountLabel->setText("0 notes");m_durationLabel->setText("0:00");
-        updateFreePlayHistory(true);
-        m_scoreStack->setCurrentWidget(m_score);if(m_liveScoreButton->isVisible())m_liveScoreButton->setChecked(true);
-    }else if(mode!=Mode::Free&&previous==Mode::Free){
-        m_freePlayEditBeat=-1;m_score->setEditCursorBeat(-1);m_score->setTimeSignatures({{0.0,4,4}});m_score->setKeySignatures({{0.0,MusicDocument::inferKeySignature(filteredNotes())}});m_score->setRests({});m_score->setRepeatEnds({});m_score->setNotes(m_notes);m_bubble->setNotes(m_notes);
-        updateSongMeta();
+void MainWindow::connectUi() {
+  m_scoreStack->setMinimumHeight(520);
+  m_sourceAudio->setText("Hear original recording (reference only)");
+  m_sourceAudio->setToolTip(
+      "Reference only; leave off to hear the generated staff notes");
+  m_midiOutputCheck->setToolTip(
+      "Send score notes through the adapter MIDI OUT to the keyboard MIDI IN; "
+      "VArpeggio's piano is silenced during score playback");
+  QSettings audioSettings("Voncloft", "VArpeggio");
+  int savedInstrument =
+      audioSettings
+          .value("audio/instrument", int(SynthInstrument::AcousticGrand))
+          .toInt();
+  // Existing installs defaulted to the narrow concert patch.  Migrate once
+  // to the tutorial grand selected from the source comparison; subsequent
+  // user choices remain untouched.
+  if (audioSettings.value("audio/pianoProfileVersion", 0).toInt() < 3) {
+    savedInstrument = int(SynthInstrument::AcousticGrand);
+    audioSettings.setValue("audio/instrument", savedInstrument);
+    audioSettings.setValue("audio/pianoProfileVersion", 3);
+  }
+  const int savedInstrumentIndex = m_instrumentCombo->findData(savedInstrument);
+  m_instrumentCombo->setCurrentIndex(
+      savedInstrumentIndex < 0 ? 0 : savedInstrumentIndex);
+  m_synth.setInstrument(
+      SynthInstrument(m_instrumentCombo->currentData().toInt()));
+  const int savedKeyboardTone =
+      qBound(0, audioSettings.value("midi/ctk511Tone", 0).toInt(), 99);
+  m_keyboardToneCombo->setCurrentIndex(savedKeyboardTone);
+  if (audioSettings.value("midi/useOutput", false).toBool()) {
+    QString error;
+    if (m_midiOutput.openFirst(&error)) {
+      m_midiOutputCheck->setChecked(true);
+      m_midiOutput.programChange(savedKeyboardTone);
+    } else
+      audioSettings.setValue("midi/useOutput", false);
+  }
+  connect(
+      m_keyboardToneCombo, &QComboBox::currentIndexChanged, this, [this](int) {
+        const int tone = m_keyboardToneCombo->currentData().toInt();
+        QSettings("Voncloft", "VArpeggio").setValue("midi/ctk511Tone", tone);
+        if (m_midiOutputCheck->isChecked() && m_midiOutput.isOpen())
+          m_midiOutput.programChange(tone);
+        toast(QString("CTK-511 tone %1 selected")
+                  .arg(m_keyboardToneCombo->currentText()));
+      });
+  connect(m_modeButtons, &QButtonGroup::idClicked, this,
+          [this](int id) { setMode(Mode(id)); });
+  connect(m_handButtons, &QButtonGroup::idClicked, this,
+          [this](int id) { setHandFilter(id == 2 ? -1 : id); });
+  connect(
+      m_scoreDisplayButtons, &QButtonGroup::idClicked, this, [this](int id) {
+        m_scoreStack->setCurrentWidget(id == 0
+                                           ? static_cast<QWidget *>(m_pdfView)
+                                           : static_cast<QWidget *>(m_score));
+      });
+  connect(m_playButton, &QPushButton::clicked, this,
+          &MainWindow::togglePlayback);
+  connect(m_recordButton, &QPushButton::clicked, this,
+          &MainWindow::toggleRecord);
+  connect(m_freeEditButton, &QPushButton::clicked, this,
+          &MainWindow::editFreePlayStaff);
+  connect(m_freeClearButton, &QPushButton::clicked, this,
+          &MainWindow::clearFreePlayStaff);
+  connect(m_detectorButton, &QPushButton::clicked, this,
+          &MainWindow::openDetectorView);
+  connect(m_piano, &PianoWidget::notePressed, this, &MainWindow::userNoteOn);
+  connect(m_piano, &PianoWidget::noteReleased, this, &MainWindow::userNoteOff);
+  connect(m_noteNames, &QCheckBox::toggled, m_score,
+          &ScoreWidget::setShowNames);
+  connect(m_bubbles, &QCheckBox::toggled, m_bubble,
+          &BubbleWidget::setBubblesVisible);
+  connect(m_sound, &QCheckBox::toggled, this, [this](bool on) {
+    m_synth.setMuted(!on);
+    m_sourceAudioOutput->setMuted(!on);
+  });
+  connect(m_instrumentCombo, &QComboBox::currentIndexChanged, this,
+          [this](int) {
+            const auto instrument =
+                SynthInstrument(m_instrumentCombo->currentData().toInt());
+            m_synth.setInstrument(instrument);
+            QSettings("Voncloft", "VArpeggio")
+                .setValue("audio/instrument", int(instrument));
+            toast(m_instrumentCombo->currentText() + " selected");
+          });
+  connect(m_volume, &QSlider::valueChanged, this, [this](int value) {
+    m_synth.setVolume(value / 100.0);
+    m_sourceAudioOutput->setVolume(qBound(0.0, value / 100.0, 1.0));
+    if (m_midiOutputCheck->isChecked() && m_midiOutput.isOpen())
+      m_midiOutput.channelVolume(qRound(value * 127.0 / 150.0));
+    m_volumeLabel->setText(
+        QString(m_midiOutputCheck->isChecked() ? "Keyboard %1%" : "Volume %1%")
+            .arg(value));
+  });
+  connect(m_midiOutputCheck, &QCheckBox::toggled, this, [this](bool checked) {
+    if (m_playing || m_playbackPaused)
+      stopPlayback(true);
+    if (checked && !m_midiOutput.isOpen()) {
+      QString error;
+      if (!m_midiOutput.openFirst(&error)) {
+        const QSignalBlocker blocker(m_midiOutputCheck);
+        m_midiOutputCheck->setChecked(false);
+        QSettings("Voncloft", "VArpeggio").setValue("midi/useOutput", false);
+        showNotice(error + " Connect adapter MIDI OUT to keyboard MIDI IN, "
+                           "then try again.",
+                   true);
+        return;
+      }
     }
-    rebuildPractice();
-    if(mode==Mode::Free){m_score->setExpected({},0);m_bubble->setExpected({},0);if(m_freePlayEditBeat<0)m_barLabel->setText("FREE PLAY   ·   Click staff to insert · Right-click for notation tools");}
+    if (!checked) {
+      m_midiOutput.allNotesOff();
+      m_midiOutput.close();
+    }
+    QSettings("Voncloft", "VArpeggio").setValue("midi/useOutput", checked);
+    if (checked) {
+      m_midiOutput.programChange(m_keyboardToneCombo->currentData().toInt());
+      m_midiOutput.channelVolume(qRound(m_volume->value() * 127.0 / 150.0));
+    }
+    m_instrumentCombo->setVisible(!checked);
+    m_keyboardToneCombo->setVisible(checked);
+    m_volumeLabel->setText(QString(checked ? "Keyboard %1%" : "Volume %1%")
+                               .arg(m_volume->value()));
+    toast(checked ? "Score playback will use " + m_midiOutput.activeDevice() +
+                        " — set loudness on the keyboard"
+                  : "Score playback will use VArpeggio's piano");
+  });
+  connect(m_sourceAudio, &QCheckBox::toggled, this, [this](bool) {
+    if (m_playing || m_playbackPaused)
+      stopPlayback(true);
     updatePrimaryButton();
+  });
+  connect(m_metronome, &QCheckBox::toggled, this, [this](bool) {
+    m_metroClock.restart();
+    m_lastMetroBeat = -1;
+  });
+  connect(m_noticeClose, &QPushButton::clicked, m_notice, &QWidget::hide);
+  connect(m_titleEdit, &QLineEdit::textChanged, this,
+          [this](const QString &t) { m_title = t; });
+  m_instrumentCombo->setVisible(!m_midiOutputCheck->isChecked());
+  m_keyboardToneCombo->setVisible(m_midiOutputCheck->isChecked());
+  connect(m_scoreHistoryBar, &QScrollBar::valueChanged, this,
+          [this](int value) {
+            if (m_mode != Mode::Free)
+              return;
+            m_freePlayAutoFollow = value >= m_scoreHistoryBar->maximum();
+            m_score->setFollowBeat(value / 8.0);
+            if (!m_freePlayAutoFollow)
+              m_barLabel->setText("FREE PLAY   ·   Viewing earlier notes — "
+                                  "drag to Latest for live follow");
+            else
+              m_barLabel->setText("FREE PLAY   ·   Live grand staff");
+            m_score->repaint();
+          });
+  connect(m_score, &ScoreWidget::seekPreviewChanged, this, [this](double beat) {
+    if (m_mode == Mode::Free)
+      return;
+    if (m_playing)
+      pausePlayback();
+    m_score->setPlayedBeat(beat);
+    m_bubble->setPlayhead(beat);
+  });
+  connect(m_score, &ScoreWidget::seekRequested, this, [this](double beat) {
+    if (m_mode != Mode::Free)
+      seekPlayback(beat);
+  });
+  connect(m_score, &ScoreWidget::editCursorChanged, this, [this](double beat) {
+    if (m_mode != Mode::Free)
+      return;
+    if (m_recording || !m_freePlayStarts.isEmpty()) {
+      m_score->setEditCursorBeat(m_freePlayEditBeat);
+      toast("Release the keys and stop recording before moving the insertion "
+            "line");
+      return;
+    }
+    m_freePlayEditBeat = beat;
+    m_freePlayEditAdvance = 0;
+    m_freePlayEditPressMs.clear();
+    m_freePlayAutoFollow = false;
+    m_score->setFollowBeat(beat);
+    const QString position = scorePosition(beat, m_freePlayTimeSignatures);
+    m_barLabel->setText(m_freePlayGroupEntry
+                            ? "FREE PLAY   ·   " + position +
+                                  " · GROUPING · Right-click to ungroup"
+                            : "FREE PLAY   ·   " + position +
+                                  " · Each note steps forward");
+  });
+  connect(m_score, &ScoreWidget::noteDeleteRequested, this, [this](int index) {
+    if (m_mode != Mode::Free || index < 0 || index >= m_freePlayNotes.size())
+      return;
+    if (m_recording || !m_freePlayStarts.isEmpty()) {
+      toast("Release the keys and stop recording before deleting a note");
+      return;
+    }
+    const QString removed =
+        MusicDocument::noteName(m_freePlayNotes[index].note);
+    m_freePlayNotes.removeAt(index);
+    syncFreePlayScore();
+    m_score->setNotes(m_freePlayNotes);
+    m_bubble->setNotes(m_freePlayNotes);
+    updateFreePlayHistory(false);
+    m_score->setEditCursorBeat(m_freePlayEditBeat);
+    toast("Deleted " + removed + " from the staff");
+  });
+  connect(
+      m_score, &ScoreWidget::noteContextRequested, this,
+      [this](int index, const QPoint &globalPosition) {
+        if(m_mode!=Mode::Free||index<0||index>=m_freePlayNotes.size()||m_recording||!m_freePlayStarts.isEmpty())
+          return;
+        QMenu menu(this);
+        QMenu *length = menu.addMenu("Note length");
+        const QVector<QPair<QString,double>> lengths={{"Sixteenth note — 1/4 beat",.25},{"Eighth note — 1/2 beat",.5},{"Dotted eighth — 3/4 beat",.75},{"Quarter note — 1 beat",1.0},{"Dotted quarter — 1 1/2 beats",1.5},{"Half note — 2 beats",2.0},{"Dotted half — 3 beats",3.0},{"Whole note — 4 beats",4.0}};
+        for(const auto &choice:lengths){
+          QAction *action = length->addAction(choice.first);
+          action->setData("duration:" + QString::number(choice.second, 'f', 2));
+          action->setCheckable(true);
+          action->setChecked(
+              qAbs(m_freePlayNotes[index].duration - choice.second) < .04);
+        }
+        QMenu *accidental=menu.addMenu("Accidental");
+        for(const auto &choice:QVector<QPair<QString,int>>{{"Automatic for key signature",int(AccidentalMark::Automatic)},{"♮  Natural",int(AccidentalMark::Natural)},{"♯  Sharp",int(AccidentalMark::Sharp)},{"♭  Flat",int(AccidentalMark::Flat)}}){
+          QAction *action = accidental->addAction(choice.first);
+          action->setData("accidental:" + QString::number(choice.second));
+          action->setCheckable(true);
+          action->setChecked(int(m_freePlayNotes[index].accidental) ==
+                             choice.second);
+        }
+        menu.addSeparator();
+        QAction *group = menu.addAction(m_freePlayGroupEntry
+                                            ? "Done grouping — resume stepping"
+                                            : "Group notes with this note");
+        group->setData("toggle-group");
+        QAction *remove=menu.addAction("Delete "+MusicDocument::noteName(m_freePlayNotes[index].note));
+        remove->setData("delete");
+        QAction *selected=menu.exec(globalPosition);
+        if (!selected)
+          return;
+        const QString command = selected->data().toString();
+        if(command=="toggle-group"){
+          setFreePlayGrouping(!m_freePlayGroupEntry,
+                              m_freePlayNotes[index].start);
+        } else if (command == "delete") {
+          const QString name =
+              MusicDocument::noteName(m_freePlayNotes[index].note);
+          m_freePlayNotes.removeAt(index);
+          toast("Deleted " + name + " from the staff");
+        } else if (command.startsWith("duration:")) {
+          const double duration = qMax(.125, command.mid(9).toDouble());
+          m_freePlayNotes[index].duration = duration;
+          toast("Changed to " + selected->text());
+        }else if(command.startsWith("accidental:")){
+          m_freePlayNotes[index].accidental =
+              AccidentalMark(command.mid(11).toInt());
+          toast("Updated the written accidental for this played pitch");
+        }
+        syncFreePlayScore();
+        m_score->setNotes(m_freePlayNotes);
+        m_bubble->setNotes(m_freePlayNotes);
+        updateFreePlayHistory(false);
+        m_score->setEditCursorBeat(m_freePlayEditBeat);
+      });
+  connect(m_score, &ScoreWidget::restDeleteRequested, this, [this](int index) {
+    if (m_mode != Mode::Free || index < 0 || index >= m_freePlayRests.size() ||
+        m_recording || !m_freePlayStarts.isEmpty())
+      return;
+    m_freePlayRests.removeAt(index);
+    m_score->setRests(m_freePlayRests);
+    syncFreePlayScore();
+    updateFreePlayHistory(false);
+    toast("Deleted the rest from the staff");
+  });
+  connect(
+      m_score, &ScoreWidget::staffContextRequested, this,
+      [this](double beat, const QPoint &globalPosition) {
+        if(m_mode!=Mode::Free||m_recording||!m_freePlayStarts.isEmpty())
+          return;
+        QMenu menu(this);
+        menu.setTitle(QString("Staff at beat %1").arg(beat, 0, 'f', 3));
+        QAction *group = menu.addAction(m_freePlayGroupEntry
+                                            ? "Done grouping — resume stepping"
+                                            : "Group notes at this position");
+        group->setData("toggle-group");
+        menu.addSeparator();
+        QMenu *meter=menu.addMenu("Time signature here");
+        for(const QString &value:{QStringLiteral("2/4"),QStringLiteral("3/4"),QStringLiteral("4/4"),QStringLiteral("5/4"),QStringLiteral("6/8"),QStringLiteral("9/8"),QStringLiteral("12/8")}){
+          QAction *action = meter->addAction(value);
+          action->setData("meter:" + value);
+        }
+        QMenu *key=menu.addMenu("Key signature here");
+        const QVector<QPair<QString,int>> keys={{"C♭ major / A♭ minor — 7 flats",-7},{"G♭ major / E♭ minor — 6 flats",-6},{"D♭ major / B♭ minor — 5 flats",-5},{"A♭ major / F minor — 4 flats",-4},{"E♭ major / C minor — 3 flats",-3},{"B♭ major / G minor — 2 flats",-2},{"F major / D minor — 1 flat (B♭)",-1},{"C major / A minor — no sharps or flats",0},{"G major / E minor — 1 sharp (F♯)",1},{"D major / B minor — 2 sharps",2},{"A major / F♯ minor — 3 sharps",3},{"E major / C♯ minor — 4 sharps",4},{"B major / G♯ minor — 5 sharps",5},{"F♯ major / D♯ minor — 6 sharps",6},{"C♯ major / A♯ minor — 7 sharps",7}};
+        for(const auto &choice:keys){
+          QAction *action = key->addAction(choice.first);
+          action->setData("key:" + QString::number(choice.second));
+        }
+        QMenu *restMenu=menu.addMenu("Insert rest");
+        for (const auto &staff : QVector<QPair<QString, QString>>{
+                 {"Treble staff", "R"}, {"Bass staff", "L"}}) {
+          QMenu *staffMenu = restMenu->addMenu(staff.first);
+          for (const auto &length :
+               QVector<QPair<QString, double>>{{"Eighth rest", .5},
+                                               {"Quarter rest", 1.0},
+                                               {"Half rest", 2.0},
+                                               {"Whole rest", 4.0}}) {
+            QAction *action = staffMenu->addAction(length.first);
+            action->setData(
+                QString("rest:%1:%2").arg(staff.second).arg(length.second));
+          }
+        }
+        const bool hasRepeat=std::any_of(m_freePlayRepeatEnds.cbegin(),m_freePlayRepeatEnds.cend(),[beat](double value){return qAbs(value-beat)<.04;});
+        QAction *repeat=menu.addAction(hasRepeat?"Remove repeat end :||":"Add repeat end :||");
+        repeat->setData("repeat");
+        const auto meterAt=std::find_if(m_freePlayTimeSignatures.cbegin(),m_freePlayTimeSignatures.cend(),[beat](const auto &value){return qAbs(value.beat-beat)<.04;});
+        if(beat>.001&&meterAt!=m_freePlayTimeSignatures.cend()){
+          QAction *removeMeter = menu.addAction("Remove time signature change");
+          removeMeter->setData("remove-meter");
+        }
+        const auto keyAt=std::find_if(m_freePlayKeySignatures.cbegin(),m_freePlayKeySignatures.cend(),[beat](const auto &value){return qAbs(value.beat-beat)<.04;});
+        if(beat>.001&&keyAt!=m_freePlayKeySignatures.cend()){
+          QAction *removeKey = menu.addAction("Remove key signature change");
+          removeKey->setData("remove-key");
+        }
+        QAction *selected=menu.exec(globalPosition);
+        if (!selected)
+          return;
+        const QString command = selected->data().toString();
+        if(command=="toggle-group"){
+          setFreePlayGrouping(!m_freePlayGroupEntry, beat);
+        }else if(command.startsWith("meter:")){
+          const QStringList pieces = command.mid(6).split('/');
+          if (pieces.size() != 2)
+            return;
+          m_freePlayTimeSignatures.erase(
+              std::remove_if(m_freePlayTimeSignatures.begin(),
+                             m_freePlayTimeSignatures.end(),
+                             [beat](const auto &value) {
+                               return qAbs(value.beat - beat) < .04;
+                             }),
+              m_freePlayTimeSignatures.end());
+          m_freePlayTimeSignatures.append(
+              {beat, pieces[0].toInt(), pieces[1].toInt()});
+          std::sort(
+              m_freePlayTimeSignatures.begin(), m_freePlayTimeSignatures.end(),
+              [](const auto &a, const auto &b) { return a.beat < b.beat; });
+          toast("Added " + pieces.join('/') + " at the orange line");
+        }else if(command=="remove-meter"){
+          m_freePlayTimeSignatures.erase(
+              std::remove_if(m_freePlayTimeSignatures.begin(),
+                             m_freePlayTimeSignatures.end(),
+                             [beat](const auto &value) {
+                               return qAbs(value.beat - beat) < .04 &&
+                                      value.beat > .001;
+                             }),
+              m_freePlayTimeSignatures.end());
+          toast("Removed the time signature change");
+        }else if(command.startsWith("key:")){
+          const int fifths = qBound(-7, command.mid(4).toInt(), 7);
+          m_freePlayKeySignatures.erase(
+              std::remove_if(m_freePlayKeySignatures.begin(),
+                             m_freePlayKeySignatures.end(),
+                             [beat](const auto &value) {
+                               return qAbs(value.beat - beat) < .04;
+                             }),
+              m_freePlayKeySignatures.end());
+          m_freePlayKeySignatures.append({beat, fifths});
+          std::sort(
+              m_freePlayKeySignatures.begin(), m_freePlayKeySignatures.end(),
+              [](const auto &a, const auto &b) { return a.beat < b.beat; });
+          toast(
+              fifths == -1
+                  ? "Added one flat — every B is flat until the next key change"
+                  : "Added the key signature at the orange line");
+        }else if(command=="remove-key"){
+          m_freePlayKeySignatures.erase(
+              std::remove_if(m_freePlayKeySignatures.begin(),
+                             m_freePlayKeySignatures.end(),
+                             [beat](const auto &value) {
+                               return qAbs(value.beat - beat) < .04 &&
+                                      value.beat > .001;
+                             }),
+              m_freePlayKeySignatures.end());
+          toast("Removed the key signature change");
+        }else if(command.startsWith("rest:")){
+          const QStringList pieces = command.split(':');
+          if (pieces.size() != 3)
+            return;
+          const Hand hand = pieces[1] == "L" ? Hand::Left : Hand::Right;
+          const double duration = pieces[2].toDouble();
+          const bool overlaps =
+              std::any_of(m_freePlayNotes.cbegin(), m_freePlayNotes.cend(),
+                          [beat, duration, hand](const auto &note) {
+                            return note.hand == hand &&
+                                   note.start < beat + duration - .001 &&
+                                   note.start + note.duration > beat + .001;
+                          });
+          if (overlaps) {
+            showNotice("That staff already has a note during this rest. Delete "
+                       "or move the note first.",
+                       true);
+            return;
+          }
+          m_freePlayRests.erase(
+              std::remove_if(m_freePlayRests.begin(), m_freePlayRests.end(),
+                             [beat, hand](const auto &value) {
+                               return qAbs(value.beat - beat) < .04 &&
+                                      value.hand == hand;
+                             }),
+              m_freePlayRests.end());
+          m_freePlayRests.append({beat, duration, hand});
+          std::sort(
+              m_freePlayRests.begin(), m_freePlayRests.end(),
+              [](const auto &a, const auto &b) { return a.beat < b.beat; });
+          m_freePlayEditBeat = beat;
+          m_score->setEditCursorBeat(m_freePlayEditBeat);
+          toast("Added the rest at the orange line");
+        }else if(command=="repeat"){
+          if (hasRepeat) {
+            m_freePlayRepeatEnds.erase(
+                std::remove_if(
+                    m_freePlayRepeatEnds.begin(), m_freePlayRepeatEnds.end(),
+                    [beat](double value) { return qAbs(value - beat) < .04; }),
+                m_freePlayRepeatEnds.end());
+            toast("Removed the repeat end");
+          } else {
+            m_freePlayRepeatEnds.append(beat);
+            std::sort(m_freePlayRepeatEnds.begin(), m_freePlayRepeatEnds.end());
+            toast("Added repeat end :|| at the orange line");
+          }
+        }
+        m_score->setTimeSignatures(m_freePlayTimeSignatures);
+        m_score->setKeySignatures(m_freePlayKeySignatures);
+        m_score->setRests(m_freePlayRests);
+        m_score->setRepeatEnds(m_freePlayRepeatEnds);
+        syncFreePlayScore();
+        updateFreePlayHistory(false);
+      });
+  connect(m_sourceAudio, &QCheckBox::toggled, this, [this](bool checked) {
+    if (checked) {
+      if (m_mode != Mode::Listen)
+        setMode(Mode::Listen);
+      toast("Original reference selected — this is not the generated staff "
+            "playback");
+    } else if (m_sourceAudio->isEnabled())
+      toast("Generated-score playback selected");
+  });
+  m_sourceAudioOutput->setVolume(1.0);
+  m_sourceAudioOutput->setMuted(!m_sound->isChecked());
+  connect(m_sourcePlayer, &QMediaPlayer::errorOccurred, this,
+          [this](QMediaPlayer::Error, const QString &message) {
+            if (!message.isEmpty() && m_usingImportedMediaAudio)
+              showNotice("The original recording could not play: " + message,
+                         true);
+          });
+  connect(m_sourcePlayer, &QMediaPlayer::mediaStatusChanged, this,
+          [this](QMediaPlayer::MediaStatus status) {
+            if (status == QMediaPlayer::LoadedMedia ||
+                status == QMediaPlayer::BufferedMedia) {
+              const double rate = m_importedMediaTempo > 0
+                                      ? double(m_tempo) / m_importedMediaTempo
+                                      : 1.0;
+              m_sourcePlayer->setPlaybackRate(rate);
+            }
+            if ((status == QMediaPlayer::LoadedMedia ||
+                 status == QMediaPlayer::BufferedMedia) &&
+                m_playing && m_usingImportedMediaAudio) {
+              const qint64 wanted = m_importedMediaStartMs +
+                                    qRound64(m_playbackOffsetSeconds * 1000.0);
+              if (qAbs(m_sourcePlayer->position() - wanted) > 150)
+                m_sourcePlayer->setPosition(wanted);
+              if (m_sourcePlayer->playbackState() != QMediaPlayer::PlayingState)
+                m_sourcePlayer->play();
+            } else if (status == QMediaPlayer::EndOfMedia &&
+                       m_usingImportedMediaAudio)
+              stopPlayback(true);
+          });
+  connect(&m_midi, &MidiInput::noteOn, this, &MainWindow::userNoteOn);
+  connect(&m_midi, &MidiInput::noteOff, this, &MainWindow::userNoteOff);
+  connect(&m_midi, &MidiInput::sustain, this, [this](bool down) {
+    m_sustain = down;
+    if (!down) {
+      for (int n : m_sustainedNotes) {
+        if (m_userVoiceIds.contains(n))
+          m_synth.noteOffVoice(m_userVoiceIds.take(n));
+        m_piano->setActive(n, false);
+      }
+      m_sustainedNotes.clear();
+    }
+  });
+  connect(&m_midi, &MidiInput::programChanged, this, [this](int program) {
+    if (program < 0 || program >= m_keyboardToneCombo->count())
+      return;
+    const QSignalBlocker blocker(m_keyboardToneCombo);
+    m_keyboardToneCombo->setCurrentIndex(program);
+    QSettings("Voncloft", "VArpeggio").setValue("midi/ctk511Tone", program);
+    toast("Keyboard selected " + m_keyboardToneCombo->currentText());
+  });
+  connect(&m_midi, &MidiInput::devicesChanged, this,
+          [this](const QStringList &devices) {
+            bool ok = !devices.isEmpty();
+            m_midiButton->setProperty("connected", ok);
+            m_midiButton->style()->unpolish(m_midiButton);
+            m_midiButton->style()->polish(m_midiButton);
+            m_midiButton->setText(ok ? "●   " + devices.first()
+                                     : "●   Connect MIDI keyboard");
+            m_midiLabel = nullptr;
+            if (ok)
+              toast("MIDI connected: " + devices.first());
+          });
+  connect(&m_midi, &MidiInput::midiError, this,
+          [this](const QString &e) { showNotice(e, true); });
+  connect(m_midiButton, &QPushButton::clicked, this, [this] {
+    const auto inputs = m_midi.connectedDevices();
+    const auto outputs = m_midiOutput.availableDevices();
+    if (inputs.isEmpty() && outputs.isEmpty()) {
+      showNotice("No MIDI adapter is visible yet. Connect it by USB and turn "
+                 "on the keyboard.");
+      return;
+    }
+    QString text =
+        "MIDI IN to VArpeggio:\n" +
+        (inputs.isEmpty() ? QString("None") : inputs.join("\n")) +
+        "\n\nMIDI OUT to keyboard:\n" +
+        (outputs.isEmpty() ? QString("None") : outputs.join("\n")) +
+        "\n\nThe CTK-511 tone selector follows Program Change messages in both "
+        "directions. Use TONE MAP N on the keyboard for the native 00–99 list.";
+    QMessageBox::information(this, "MIDI keyboard", text);
+  });
+}
+
+void MainWindow::setMode(Mode mode) {
+  const Mode previous = m_mode;
+  if (m_earTraining && mode != Mode::Wait) {
+    m_earTraining = false;
+    m_synth.stopSequence();
+  }
+  if (m_recording && mode != Mode::Free)
+    finishRecording();
+  if (m_playing || m_playbackPaused)
+    stopPlayback(false);
+  m_mode = mode;
+  m_bubble->setWaitMode(mode == Mode::Wait);
+  QString text;
+  switch (mode) {
+  case Mode::Wait:
+    text = "WAIT MODE · MUSIC STOPS FOR YOU";
+    break;
+  case Mode::Listen:
+    text = "LISTEN · HEAR THE SHEET";
+    break;
+  case Mode::Follow:
+    text = "PLAY ALONG · FOLLOW TEMPO";
+    break;
+  case Mode::Free:
+    text = "FREE PLAY · LIVE NOTATION";
+    break;
+  }
+  m_modeLabel->setText(text);
+  if (auto *b = m_modeButtons->button(int(mode)))
+    b->setChecked(true);
+  m_recordButton->setVisible(mode == Mode::Free);
+  m_freeEditButton->hide();
+  m_freeClearButton->setVisible(mode == Mode::Free);
+  m_scoreHistoryRow->setVisible(mode == Mode::Free);
+  m_score->setLiveWritingMode(mode == Mode::Free);
+  m_score->setEditEnabled(mode == Mode::Free);
+  m_score->setSeekEnabled(mode != Mode::Free);
+  if (mode == Mode::Free && previous != Mode::Free) {
+    m_freePlayNotes.clear();
+    m_freePlayStarts.clear();
+    m_freePlayIndexes.clear();
+    m_freePlayPressMs.clear();
+    m_freePlayEditPressMs.clear();
+    m_freePlayApplied = false;
+    m_freePlayAutoFollow = true;
+    m_freePlayGroupEntry = false;
+    m_freePlayOffsetBeat = 0;
+    m_freePlayEditBeat = -1;
+    m_freePlayEditAdvance = 0;
+    m_freePlayTimeSignatures = {{0.0, 4, 4}};
+    m_freePlayKeySignatures = {{0.0, 0}};
+    m_freePlayRests.clear();
+    m_freePlayRepeatEnds.clear();
+    m_freePlayClock.invalidate();
+    m_handFilter = -1;
+    m_score->setHandFilter(-1);
+    m_bubble->setHandFilter(-1);
+    if (auto *b = m_handButtons->button(2))
+      b->setChecked(true);
+    m_score->setNotes(m_freePlayNotes);
+    m_score->setEditCursorBeat(-1);
+    m_score->setTimeSignatures(m_freePlayTimeSignatures);
+    m_score->setKeySignatures(m_freePlayKeySignatures);
+    m_score->setRests(m_freePlayRests);
+    m_score->setRepeatEnds(m_freePlayRepeatEnds);
+    m_bubble->setNotes(m_freePlayNotes);
+    m_score->setExpected({}, 0);
+    m_bubble->setExpected({}, 0);
+    m_score->setFollowBeat(0);
+    m_bubble->setPlayhead(0);
+    m_barLabel->setText("FREE PLAY   ·   Click staff to insert · Right-click "
+                        "for notation tools");
+    m_noteCountLabel->setText("0 notes");
+    m_durationLabel->setText("0:00");
+    updateFreePlayHistory(true);
+    m_scoreStack->setCurrentWidget(m_score);
+    if (m_liveScoreButton->isVisible())
+      m_liveScoreButton->setChecked(true);
+  } else if (mode != Mode::Free && previous == Mode::Free) {
+    m_freePlayEditBeat = -1;
+    m_score->setEditCursorBeat(-1);
+    m_score->setTimeSignatures({{0.0, 4, 4}});
+    m_score->setKeySignatures(
+        {{0.0, MusicDocument::inferKeySignature(filteredNotes())}});
+    m_score->setRests({});
+    m_score->setRepeatEnds({});
+    m_score->setNotes(m_notes);
+    m_bubble->setNotes(m_notes);
+    updateSongMeta();
+  }
+  rebuildPractice();
+  if (mode == Mode::Free) {
+    m_score->setExpected({}, 0);
+    m_bubble->setExpected({}, 0);
+    if (m_freePlayEditBeat < 0)
+      m_barLabel->setText("FREE PLAY   ·   Click staff to insert · Right-click "
+                          "for notation tools");
+  }
+  updatePrimaryButton();
 }
 void MainWindow::setSong(const QString&title,const QVector<NoteEvent>&notes,int tempo){stopPlayback(false);clearImportedMediaSource();m_title=title;m_notes=notes;m_tempo=qBound(30,tempo,260);m_titleEdit->setText(title);m_titleEdit->setCursorPosition(0);if(m_tempoControl){const QSignalBlocker blocker(m_tempoControl);m_tempoControl->setValue(m_tempo);}m_pdfDocument->close();m_generatedScoreDir.reset();m_scoreViewButton->setText("Exact PDF");m_scoreViewButton->hide();m_liveScoreButton->hide();m_liveScoreButton->setEnabled(true);m_liveScoreButton->setChecked(true);m_scoreStack->setCurrentWidget(m_score);m_score->setTimeSignatures({{0.0,4,4}});m_score->setKeySignatures({{0.0,MusicDocument::inferKeySignature(notes)}});m_score->setRests({});m_score->setRepeatEnds({});m_score->setNotes(notes);m_bubble->setNotes(notes);m_notice->hide();rebuildPractice();updateSongMeta();}
 void MainWindow::setExactScoreAvailable(const QString &label){m_scoreViewButton->setText(label);m_scoreViewButton->show();m_liveScoreButton->setEnabled(!m_notes.isEmpty());m_liveScoreButton->show();m_scoreViewButton->setChecked(true);m_scoreStack->setCurrentWidget(m_pdfView);}
@@ -725,7 +1643,14 @@ void MainWindow::changeTempo(int tempo){
     }
     m_tempo=tempo;
     if(m_tempoControl&&m_tempoControl->value()!=tempo){const QSignalBlocker blocker(m_tempoControl);m_tempoControl->setValue(tempo);}
-    if(m_importedMediaTempo>0)m_sourcePlayer->setPlaybackRate(double(m_tempo)/m_importedMediaTempo);
+    if(m_importedMediaTempo>0){
+        const double rate=double(m_tempo)/m_importedMediaTempo;
+        const qint64 sourcePosition=m_sourcePlayer->position();
+        const bool mediaWasPlaying=m_usingImportedMediaAudio&&m_sourcePlayer->playbackState()==QMediaPlayer::PlayingState;
+        m_sourcePlayer->setPlaybackRate(rate);
+        if(mediaWasPlaying){m_sourcePlayer->setPosition(sourcePosition);m_sourcePlayer->play();}
+        if(m_sourceAudio&&m_sourceAudio->isChecked())toast(QString("Media tempo: %1 BPM · %2× speed").arg(m_tempo).arg(rate,0,'f',2));
+    }
 
     if(m_playing&&!m_usingImportedMediaAudio){
         m_midiOutput.allNotesOff();m_midiOutputNotes.clear();
@@ -828,7 +1753,7 @@ void MainWindow::togglePlayback(){
     if(m_playbackPaused){
         const int clockTempo=m_usingImportedMediaAudio&&m_importedMediaTempo>0?m_importedMediaTempo:m_tempo;
         const double currentBeat=m_playbackOffsetSeconds*clockTempo/60.0;
-        if(m_usingImportedMediaAudio){m_sourcePlayer->setPosition(m_importedMediaStartMs+qRound64(m_playbackOffsetSeconds*1000.0));m_sourcePlayer->play();}
+        if(m_usingImportedMediaAudio){m_sourcePlayer->setPlaybackRate(m_importedMediaTempo>0?double(m_tempo)/m_importedMediaTempo:1.0);m_sourcePlayer->setPosition(m_importedMediaStartMs+qRound64(m_playbackOffsetSeconds*1000.0));m_sourcePlayer->play();}
         else{
             const QVector<NoteEvent> sequence=m_mode==Mode::Free?m_freePlayNotes:filteredNotes();
             if(!m_midiOutputCheck->isChecked())m_synth.startSequence(sequence,m_tempo,currentBeat);
@@ -844,7 +1769,7 @@ void MainWindow::togglePlayback(){
     if(m_mode==Mode::Free){if(m_recording)finishRecording();if(m_freePlayNotes.isEmpty()){toast("Add at least one note before previewing the score");return;}syncFreePlayScore();m_usingImportedMediaAudio=false;m_playbackPaused=false;m_playbackOffsetSeconds=0;if(!m_midiOutputCheck->isChecked())m_synth.startSequence(m_freePlayNotes,m_tempo);m_playing=true;m_playClock.restart();m_metroClock.restart();m_lastMetroBeat=-1;m_startedEvents.clear();m_endedEvents.clear();m_midiOutputNotes.clear();m_score->setEditCursorBeat(-1);updatePrimaryButton();toast(m_midiOutputCheck->isChecked()?"Sending the Free Play staff to the keyboard":"Playing the notes shown on the Free Play staff");return;}
     if(m_recording)finishRecording();if(m_notes.isEmpty()){showNotice("Import or record some notes first.",true);return;}
     m_usingImportedMediaAudio=useImportedMediaAudio();m_playbackPaused=false;m_playbackOffsetSeconds=0;
-    if(m_usingImportedMediaAudio){m_sourcePlayer->setPosition(m_importedMediaStartMs);m_sourcePlayer->play();}
+    if(m_usingImportedMediaAudio){m_sourcePlayer->setPlaybackRate(m_importedMediaTempo>0?double(m_tempo)/m_importedMediaTempo:1.0);m_sourcePlayer->setPosition(m_importedMediaStartMs);m_sourcePlayer->play();}
     else if(!m_midiOutputCheck->isChecked())m_synth.startSequence(filteredNotes(),m_tempo);
     m_playing=true;m_playClock.restart();m_metroClock.restart();m_lastMetroBeat=-1;m_startedEvents.clear();m_endedEvents.clear();m_midiOutputNotes.clear();m_groupIndex=0;updateExpected();updatePrimaryButton();
     toast(m_usingImportedMediaAudio?"Playing the original imported recording":m_midiOutputCheck->isChecked()?"Sending the notation to the keyboard":m_mode==Mode::Listen?"Listening to the notation playback":"Play along started");
@@ -982,138 +1907,394 @@ void MainWindow::editFreePlayStaff(){
     };
     for(const auto &event:m_freePlayNotes)addRow(event);
     auto *controls=new QHBoxLayout;auto *add=button("＋  Add note","routineDialogSecondary");controls->addWidget(add);controls->addStretch();auto *buttons=new QDialogButtonBox(QDialogButtonBox::Save|QDialogButtonBox::Cancel);buttons->button(QDialogButtonBox::Save)->setText("Apply changes");controls->addWidget(buttons);layout->addLayout(controls);
-    connect(add,&QPushButton::clicked,&dialog,[&,addRow]{double startBeat=0;for(int row=0;row<table->rowCount();++row)if(auto *start=qobject_cast<QDoubleSpinBox*>(table->cellWidget(row,1)))startBeat=qMax(startBeat,start->value());addRow({60,startBeat+.5,1,96,Hand::Right});});
-    connect(buttons,&QDialogButtonBox::accepted,&dialog,&QDialog::accept);connect(buttons,&QDialogButtonBox::rejected,&dialog,&QDialog::reject);
-    if(dialog.exec()!=QDialog::Accepted)return;
+    connect(add, &QPushButton::clicked, &dialog, [&, addRow] {
+      double startBeat = 0;
+      for (int row = 0; row < table->rowCount(); ++row)
+        if (auto *start =
+                qobject_cast<QDoubleSpinBox *>(table->cellWidget(row, 1)))
+          startBeat = qMax(startBeat, start->value());
+      addRow({60, startBeat + .5, 1, 96, Hand::Right});
+    });
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted)
+      return;
 
-    QVector<NoteEvent> edited;for(int row=0;row<table->rowCount();++row){auto *remove=qobject_cast<QCheckBox*>(table->cellWidget(row,4));if(remove&&remove->isChecked())continue;auto *pitch=qobject_cast<QComboBox*>(table->cellWidget(row,0));auto *start=qobject_cast<QDoubleSpinBox*>(table->cellWidget(row,1));auto *length=qobject_cast<QDoubleSpinBox*>(table->cellWidget(row,2));auto *hand=qobject_cast<QComboBox*>(table->cellWidget(row,3));if(!pitch||!start||!length||!hand)continue;edited.append({pitch->currentData().toInt(),start->value(),length->value(),96,Hand(hand->currentData().toInt())});}
-    std::sort(edited.begin(),edited.end(),[](const NoteEvent &a,const NoteEvent &b){return a.start==b.start?a.note<b.note:a.start<b.start;});m_freePlayNotes=edited;
-    if(!m_freePlayApplied){m_title="Free Play score";m_titleEdit->setText(m_title);}m_freePlayApplied=true;m_notes=m_freePlayNotes;clearImportedMediaSource();m_pdfDocument->close();m_generatedScoreDir.reset();m_scoreViewButton->hide();m_liveScoreButton->hide();refreshFreePlayStaff();toast(QString("Applied %1 edited notes — ready to Save").arg(m_freePlayNotes.size()));
+    QVector<NoteEvent> edited;
+    for (int row = 0; row < table->rowCount(); ++row) {
+      auto *remove = qobject_cast<QCheckBox *>(table->cellWidget(row, 4));
+      if (remove && remove->isChecked())
+        continue;
+      auto *pitch = qobject_cast<QComboBox *>(table->cellWidget(row, 0));
+      auto *start = qobject_cast<QDoubleSpinBox *>(table->cellWidget(row, 1));
+      auto *length = qobject_cast<QDoubleSpinBox *>(table->cellWidget(row, 2));
+      auto *hand = qobject_cast<QComboBox *>(table->cellWidget(row, 3));
+      if (!pitch || !start || !length || !hand)
+        continue;
+      edited.append({pitch->currentData().toInt(), start->value(),
+                     length->value(), 96, Hand(hand->currentData().toInt())});
+    }
+    std::sort(edited.begin(), edited.end(),
+              [](const NoteEvent &a, const NoteEvent &b) {
+                return a.start == b.start ? a.note < b.note : a.start < b.start;
+              });
+    m_freePlayNotes = edited;
+    if (!m_freePlayApplied) {
+      m_title = "Free Play score";
+      m_titleEdit->setText(m_title);
+    }
+    m_freePlayApplied = true;
+    m_notes = m_freePlayNotes;
+    clearImportedMediaSource();
+    m_pdfDocument->close();
+    m_generatedScoreDir.reset();
+    m_scoreViewButton->hide();
+    m_liveScoreButton->hide();
+    refreshFreePlayStaff();
+    toast(QString("Applied %1 edited notes — ready to Save")
+              .arg(m_freePlayNotes.size()));
 }
 
-void MainWindow::importScore(){QSettings settings("Keyflow","Keyflow");const QString start=settings.value("dialogs/importFolder",QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)).toString();QString path=QFileDialog::getOpenFileName(this,"Import sheet music",start,"Supported scores (*.mid *.midi *.musicxml *.mxl *.xml *.abc *.json *.keyflow *.pdf);;MIDI (*.mid *.midi);;MusicXML (*.musicxml *.mxl *.xml);;ABC notation (*.abc);;PDF sheet music (*.pdf);;Keyflow project (*.json *.keyflow)");if(!path.isEmpty()){settings.setValue("dialogs/importFolder",QFileInfo(path).absolutePath());openScore(path);}}
+void MainWindow::importScore() {
+  QSettings settings("Voncloft", "VArpeggio");
+  const QString start =
+      settings
+          .value("dialogs/importFolder", QStandardPaths::writableLocation(
+                                             QStandardPaths::DocumentsLocation))
+          .toString();
+  QString path = QFileDialog::getOpenFileName(
+      this, "Import sheet music", start,
+      "Supported scores (*.mid *.midi *.musicxml *.mxl *.xml *.abc *.json "
+      "*.varpeggio *.pdf);;MIDI (*.mid *.midi);;MusicXML (*.musicxml "
+      "*.mxl *.xml);;ABC notation (*.abc);;PDF sheet music (*.pdf);;VArpeggio "
+      "project (*.json *.varpeggio)");
+  if (!path.isEmpty()) {
+    settings.setValue("dialogs/importFolder", QFileInfo(path).absolutePath());
+    openScore(path);
+  }
+}
 void MainWindow::openScore(const QString &path) {
-    const QFileInfo info(path);
-    const QString extension=info.suffix().toLower();
-    if(extension=="pdf"){
-        const QString pdfdetach=QStandardPaths::findExecutable(QStringLiteral("pdfdetach"));
-        QProcess list;
-        if(!pdfdetach.isEmpty()){list.start(pdfdetach,{"-list",path});list.waitForFinished(5000);}
-        const QString listing=QString::fromLocal8Bit(list.readAllStandardOutput());
-        const auto match=QRegularExpression("(?m)^\\d+: (.+\\.(?:keyflow|musicxml|mxl|xml|mid|midi))\\s*$",QRegularExpression::CaseInsensitiveOption).match(listing);
-        if(match.hasMatch()){
-            QTemporaryDir temp;const QString embeddedName=match.captured(1).trimmed();
-            const QString project=temp.filePath("embedded."+QFileInfo(embeddedName).suffix().toLower());
-            QProcess extract;extract.start(pdfdetach,{"-savefile",embeddedName,"-o",project,path});
-            if(extract.waitForFinished(5000)&&extract.exitCode()==0){
-                QVector<NoteEvent>notes;QVector<TimeSignatureEvent>meters;QVector<double>repeats;QVector<KeySignatureEvent>keys;QVector<StaffRestEvent>rests;QString title;int tempo=m_tempo;QString importError;
-                if(MusicDocument::importFile(project,notes,title,tempo,&importError,&meters,&repeats,&keys,&rests)){
-                    setSong(title,notes,tempo);
-                    const bool editable=QFileInfo(embeddedName).suffix().compare("keyflow",Qt::CaseInsensitive)==0;
-                    if(editable){
-                        setMode(Mode::Free);m_title=title;m_titleEdit->setText(title);m_freePlayNotes=notes;m_notes=notes;
-                        m_freePlayTimeSignatures=meters.isEmpty()?QVector<TimeSignatureEvent>{{0.0,4,4}}:meters;
-                        m_freePlayKeySignatures=keys.isEmpty()?QVector<KeySignatureEvent>{{0.0,0}}:keys;
-                        m_freePlayRepeatEnds=repeats;m_freePlayRests=rests;m_freePlayApplied=true;refreshFreePlayStaff();
-                    }
-                    if(m_pdfDocument->load(path)==QPdfDocument::Error::None){setExactScoreAvailable();if(editable){m_liveScoreButton->setChecked(true);m_scoreStack->setCurrentWidget(m_score);}}
-                    if(editable){m_barLabel->setText("FREE PLAY   ·   Editable Keyflow PDF loaded");showNotice("Editable Keyflow PDF loaded. Click the live staff to place the orange line, then add, group, delete, or change notes. Exact PDF keeps the saved page available for reference.");toast(QString("Restored %1 editable notes from the PDF").arg(notes.size()));}
-                    else showNotice("Playable PDF loaded. Choose Exact PDF for the original engraving or Live follow to watch the practice score move with you.");
-                    return;
-                }
-            }
-        }
-
-        // A normal engraved PDF has no timing or pitch events. Treat a same-name
-        // score file beside it as the playable half while retaining the original
-        // PDF as the exact visual score.
-        const QString sidecar=matchingScoreSidecar(info);
-        if(!sidecar.isEmpty()){
-            QVector<NoteEvent>notes;QVector<TimeSignatureEvent>meters;QVector<double>repeats;QVector<KeySignatureEvent>keys;QVector<StaffRestEvent>rests;QString title;int tempo=m_tempo;QString importError;
-            if(MusicDocument::importFile(sidecar,notes,title,tempo,&importError,&meters,&repeats,&keys,&rests)&&!notes.isEmpty()){
-                if(title.isEmpty())title=info.completeBaseName();
-                setSong(title,notes,tempo);
-                const bool editable=QFileInfo(sidecar).suffix().compare("keyflow",Qt::CaseInsensitive)==0;
-                if(editable){setMode(Mode::Free);m_title=title;m_titleEdit->setText(title);m_freePlayNotes=notes;m_notes=notes;m_freePlayTimeSignatures=meters.isEmpty()?QVector<TimeSignatureEvent>{{0.0,4,4}}:meters;m_freePlayKeySignatures=keys.isEmpty()?QVector<KeySignatureEvent>{{0.0,0}}:keys;m_freePlayRepeatEnds=repeats;m_freePlayRests=rests;m_freePlayApplied=true;refreshFreePlayStaff();}
-                if(m_pdfDocument->load(path)==QPdfDocument::Error::None){setExactScoreAvailable();if(editable){m_liveScoreButton->setChecked(true);m_scoreStack->setCurrentWidget(m_score);}}
-                showNotice(editable?QString("Loaded %1 editable notes from %2 and kept the PDF page under Exact PDF.").arg(notes.size()).arg(QFileInfo(sidecar).fileName()):QString("Loaded %1 playable notes from %2 and kept the original PDF engraving. Choose Exact PDF or Live follow at any time.").arg(notes.size()).arg(QFileInfo(sidecar).fileName()));
-                return;
-            }
-            showPdfRecognitionDialog(this,"Matching score could not be read",
-                                     QString("Keyflow found %1 beside this PDF, but could not read playable notes from it.\n\n%2")
-                                     .arg(QFileInfo(sidecar).fileName(),importError));
-        }
-
-        setSong(info.completeBaseName(),{},m_tempo);
-        if(m_pdfDocument->load(path)!=QPdfDocument::Error::None){QMessageBox::warning(this,"Could not open PDF","Keyflow could not read this PDF.");return;}
-        setExactScoreAvailable();
-
-        const AudiverisLauncher audiveris=findAudiveris();
-        if(!audiveris){
-            showNotice("The PDF is open for viewing, but it has no playable note data and no optical-music reader is installed.",true);
-            showPdfRecognitionDialog(this,"PDF opened — playback needs note recognition",
-                QString("A PDF stores printed pages, not the pitch and timing data needed for playback. Keyflow found no same-name playable score and Audiveris is not installed, so it will not invent notes from the page.\n\n"
-                        "To make this PDF playable:\n"
-                        "• Put %1.musicxml, %1.mxl, %1.mid, or %1.keyflow beside the PDF and reopen it; or\n"
-                        "• Install Audiveris from KDE Discover / Flathub (app ID: org.audiveris.audiveris), then reopen the PDF.\n\n"
-                        "Optical recognition is a draft: complicated, scanned, or handwritten scores can still need correction.")
-                .arg(info.completeBaseName()));
-            return;
-        }
-
-        QProgressDialog progress("Reading the printed staves and notes with Audiveris…\nThis can take several minutes for a long score.","Cancel",0,0,this);
-        progress.setWindowTitle("Making the PDF playable");progress.setWindowModality(Qt::WindowModal);progress.setMinimumDuration(0);progress.setAutoClose(false);
-        std::atomic_bool cancelRequested{false};
-        connect(&progress,&QProgressDialog::canceled,this,[&]{cancelRequested.store(true);});
-        QFutureWatcher<OpticalScoreResult> watcher;QEventLoop loop;QTimer messageTimer;int messageIndex=0;
-        const QStringList messages={
-            "Reading the printed staves and notes with Audiveris…\nThis can take several minutes for a long score.",
-            "Optical recognition is still working through clefs, noteheads, beams, and rhythms…",
-            "Building playable MusicXML from the recognized score…"
-        };
-        connect(&watcher,&QFutureWatcher<OpticalScoreResult>::finished,&loop,&QEventLoop::quit);
-        connect(&messageTimer,&QTimer::timeout,this,[&]{messageIndex=(messageIndex+1)%messages.size();progress.setLabelText(messages[messageIndex]);});
-        messageTimer.start(4500);
-        watcher.setFuture(QtConcurrent::run([=,&cancelRequested]{return recognizePdf(audiveris,path,m_tempo,[&]{return cancelRequested.load();});}));
-        loop.exec();messageTimer.stop();progress.close();
-        const OpticalScoreResult recognized=watcher.result();
-        if(recognized.canceled){showNotice("Optical recognition was canceled. The original PDF is still open for viewing.",true);return;}
-        if(recognized.notes.isEmpty()){
-            showNotice("The original PDF is open, but optical recognition did not produce playable notes.",true);
-            showPdfRecognitionDialog(this,"This PDF could not be made playable",
-                recognized.error+"\n\nThe original PDF is still available in Exact PDF view. For the most reliable result, export MusicXML from a notation program or correct the score in Audiveris, save it beside this PDF with the same name, and reopen it.");
-            return;
-        }
-
-        const QString recognizedTitle=recognized.title.isEmpty()?info.completeBaseName():recognized.title;
-        setSong(recognizedTitle,recognized.notes,recognized.tempo);
-        if(m_pdfDocument->load(path)==QPdfDocument::Error::None)setExactScoreAvailable();
-        showNotice(QString("Audiveris optically recognized %1 playable notes%2. The original PDF remains under Exact PDF; Live follow, Listen, and Wait mode use the recognition draft. Check difficult rhythms and accidentals before relying on it.")
-                   .arg(recognized.notes.size())
-                   .arg(recognized.movementCount>1?QString(" across %1 score sections").arg(recognized.movementCount):QString()));
-        return;
+  const QFileInfo info(path);
+  const QString extension = info.suffix().toLower();
+  if (extension == "pdf") {
+    const QString pdfdetach =
+        QStandardPaths::findExecutable(QStringLiteral("pdfdetach"));
+    QProcess list;
+    if (!pdfdetach.isEmpty()) {
+      list.start(pdfdetach, {"-list", path});
+      list.waitForFinished(5000);
     }
-
-    QVector<NoteEvent>notes;QVector<TimeSignatureEvent>meters;QVector<double>repeats;QVector<KeySignatureEvent>keys;QVector<StaffRestEvent>rests;QString title;int tempo=m_tempo;QString error;
-    if(!MusicDocument::importFile(path,notes,title,tempo,&error,&meters,&repeats,&keys,&rests)){QMessageBox::warning(this,"Could not import score",error);return;}
-    setSong(title,notes,tempo);
-    if(extension=="json"||extension=="keyflow"){
-        setMode(Mode::Free);m_title=title;m_titleEdit->setText(title);m_freePlayNotes=notes;m_notes=notes;m_freePlayTimeSignatures=meters.isEmpty()?QVector<TimeSignatureEvent>{{0.0,4,4}}:meters;m_freePlayKeySignatures=keys.isEmpty()?QVector<KeySignatureEvent>{{0.0,0}}:keys;m_freePlayRepeatEnds=repeats;m_freePlayRests=rests;m_freePlayApplied=true;refreshFreePlayStaff();m_barLabel->setText("FREE PLAY   ·   Editable project loaded");toast(QString("Loaded %1 editable notes, %2 rests, and the saved notation marks").arg(notes.size()).arg(rests.size()));return;
-    }
-
-    // MusicXML and its same-named PDF are two halves of one score: XML drives
-    // playback/practice while the PDF preserves the exact engraved notation.
-    if(extension=="musicxml"||extension=="mxl"||extension=="xml"){
-        const QString sidecarPdf=info.dir().filePath(info.completeBaseName()+".pdf");
-        if(QFileInfo::exists(sidecarPdf)&&m_pdfDocument->load(sidecarPdf)==QPdfDocument::Error::None){
+    const QString listing =
+        QString::fromLocal8Bit(list.readAllStandardOutput());
+    const auto match =
+        QRegularExpression(
+            "(?m)^\\d+: "
+            "(.+\\.(?:varpeggio|musicxml|mxl|xml|mid|midi))\\s*$",
+            QRegularExpression::CaseInsensitiveOption)
+            .match(listing);
+    if (match.hasMatch()) {
+      QTemporaryDir temp;
+      const QString embeddedName = match.captured(1).trimmed();
+      const QString project = temp.filePath(
+          "embedded." + QFileInfo(embeddedName).suffix().toLower());
+      QProcess extract;
+      extract.start(pdfdetach,
+                    {"-savefile", embeddedName, "-o", project, path});
+      if (extract.waitForFinished(5000) && extract.exitCode() == 0) {
+        QVector<NoteEvent> notes;
+        QVector<TimeSignatureEvent> meters;
+        QVector<double> repeats;
+        QVector<KeySignatureEvent> keys;
+        QVector<StaffRestEvent> rests;
+        QString title;
+        int tempo = m_tempo;
+        QString importError;
+        if (MusicDocument::importFile(project, notes, title, tempo,
+                                      &importError, &meters, &repeats, &keys,
+                                      &rests)) {
+          setSong(title, notes, tempo);
+          const QString embeddedSuffix =
+              QFileInfo(embeddedName).suffix().toLower();
+          const bool editable = embeddedSuffix == "varpeggio";
+          if (editable) {
+            setMode(Mode::Free);
+            m_title = title;
+            m_titleEdit->setText(title);
+            m_freePlayNotes = notes;
+            m_notes = notes;
+            m_freePlayTimeSignatures =
+                meters.isEmpty() ? QVector<TimeSignatureEvent>{{0.0, 4, 4}}
+                                 : meters;
+            m_freePlayKeySignatures =
+                keys.isEmpty() ? QVector<KeySignatureEvent>{{0.0, 0}} : keys;
+            m_freePlayRepeatEnds = repeats;
+            m_freePlayRests = rests;
+            m_freePlayApplied = true;
+            refreshFreePlayStaff();
+          }
+          if (m_pdfDocument->load(path) == QPdfDocument::Error::None) {
             setExactScoreAvailable();
-            showNotice(QString("Loaded %1 playable notes at %2 BPM. Choose Exact PDF for the original engraving or Live follow to watch the score advance.").arg(notes.size()).arg(tempo));
-            return;
+            if (editable) {
+              m_liveScoreButton->setChecked(true);
+              m_scoreStack->setCurrentWidget(m_score);
+            }
+          }
+          if (editable) {
+            m_barLabel->setText(
+                "FREE PLAY   ·   Editable VArpeggio PDF loaded");
+            showNotice(
+                "Editable VArpeggio PDF loaded. Click the live staff to place "
+                "the orange line, then add, group, delete, or change notes. "
+                "Exact PDF keeps the saved page available for reference.");
+            toast(QString("Restored %1 editable notes from the PDF")
+                      .arg(notes.size()));
+          } else
+            showNotice("Playable PDF loaded. Choose Exact PDF for the original "
+                       "engraving or Live follow to watch the practice score "
+                       "move with you.");
+          return;
         }
+      }
     }
-    toast(QString("Imported %1 notes from %2").arg(notes.size()).arg(extension.toUpper()));
+
+    // A normal engraved PDF has no timing or pitch events. Treat a same-name
+    // score file beside it as the playable half while retaining the original
+    // PDF as the exact visual score.
+    const QString sidecar = matchingScoreSidecar(info);
+    if (!sidecar.isEmpty()) {
+      QVector<NoteEvent> notes;
+      QVector<TimeSignatureEvent> meters;
+      QVector<double> repeats;
+      QVector<KeySignatureEvent> keys;
+      QVector<StaffRestEvent> rests;
+      QString title;
+      int tempo = m_tempo;
+      QString importError;
+      if (MusicDocument::importFile(sidecar, notes, title, tempo, &importError,
+                                    &meters, &repeats, &keys, &rests) &&
+          !notes.isEmpty()) {
+        if (title.isEmpty())
+          title = info.completeBaseName();
+        setSong(title, notes, tempo);
+        const QString sidecarSuffix = QFileInfo(sidecar).suffix().toLower();
+        const bool editable = sidecarSuffix == "varpeggio";
+        if (editable) {
+          setMode(Mode::Free);
+          m_title = title;
+          m_titleEdit->setText(title);
+          m_freePlayNotes = notes;
+          m_notes = notes;
+          m_freePlayTimeSignatures =
+              meters.isEmpty() ? QVector<TimeSignatureEvent>{{0.0, 4, 4}}
+                               : meters;
+          m_freePlayKeySignatures =
+              keys.isEmpty() ? QVector<KeySignatureEvent>{{0.0, 0}} : keys;
+          m_freePlayRepeatEnds = repeats;
+          m_freePlayRests = rests;
+          m_freePlayApplied = true;
+          refreshFreePlayStaff();
+        }
+        if (m_pdfDocument->load(path) == QPdfDocument::Error::None) {
+          setExactScoreAvailable();
+          if (editable) {
+            m_liveScoreButton->setChecked(true);
+            m_scoreStack->setCurrentWidget(m_score);
+          }
+        }
+        showNotice(editable ? QString("Loaded %1 editable notes from %2 and "
+                                      "kept the PDF page under Exact PDF.")
+                                  .arg(notes.size())
+                                  .arg(QFileInfo(sidecar).fileName())
+                            : QString("Loaded %1 playable notes from %2 and "
+                                      "kept the original PDF engraving. Choose "
+                                      "Exact PDF or Live follow at any time.")
+                                  .arg(notes.size())
+                                  .arg(QFileInfo(sidecar).fileName()));
+        return;
+      }
+      showPdfRecognitionDialog(
+          this, "Matching score could not be read",
+          QString("VArpeggio found %1 beside this PDF, but could not read "
+                  "playable notes from it.\n\n%2")
+              .arg(QFileInfo(sidecar).fileName(), importError));
+    }
+
+    setSong(info.completeBaseName(), {}, m_tempo);
+    if (m_pdfDocument->load(path) != QPdfDocument::Error::None) {
+      QMessageBox::warning(this, "Could not open PDF",
+                           "VArpeggio could not read this PDF.");
+      return;
+    }
+    setExactScoreAvailable();
+
+    QString opticalEngine;const bool audiverisReady=AudiverisBridge::available(&opticalEngine);
+    QProgressDialog progress(
+        audiverisReady
+            ? QString("Using the installed %1 engine to read the score and export MusicXML…").arg(opticalEngine)
+            : QString("Preparing the open-source Audiveris score reader for first use…"),
+        "Cancel", 0, audiverisReady?0:100, this);
+    progress.setWindowTitle("Making the PDF playable");
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(0);
+    progress.setAutoClose(false);
+    std::atomic_bool cancelRequested{false};
+    connect(&progress, &QProgressDialog::canceled, this,
+            [&] { cancelRequested.store(true); });
+    QFutureWatcher<PdfRecognitionResult> watcher;
+    QEventLoop loop;
+    QTimer messageTimer;
+    int messageIndex = 0;
+    const QStringList messages = audiverisReady
+        ? QStringList{"Audiveris is reading the printed notation…",
+                      "Audiveris is resolving voices, accidentals, rests, and rhythms…",
+                      "Importing the Audiveris MusicXML into VArpeggio…"}
+        : QStringList{"Downloading or preparing the open-source Audiveris engine…",
+                      "VArpeggio will keep this engine in your user data folder for later PDFs…",
+                      "If Audiveris is unavailable, VArpeggio will use its built-in reader…",
+                      "VArpeggio is rendering and reading the PDF pages…",
+                      "Finding paired treble and bass staves, measures, and noteheads…",
+                      "Building editable playable notation from the recognized score…"};
+    connect(&watcher, &QFutureWatcher<PdfRecognitionResult>::finished, &loop,
+            &QEventLoop::quit);
+    connect(&messageTimer, &QTimer::timeout, this, [&] {
+      messageIndex = (messageIndex + 1) % messages.size();
+      progress.setLabelText(messages[messageIndex]);
+    });
+    messageTimer.start(4500);
+    const QPointer<QProgressDialog> progressGuard(&progress);
+    watcher.setFuture(QtConcurrent::run([path, tempo=m_tempo, progressGuard, &cancelRequested] {
+      QString setupError;
+      const bool useAudiveris=AudiverisBridge::ensureAvailable(
+          &setupError,
+          [progressGuard](int value,const QString &message){
+            if(progressGuard)QMetaObject::invokeMethod(progressGuard,[progressGuard,value,message]{
+              if(!progressGuard)return;
+              progressGuard->setRange(0,100);
+              progressGuard->setValue(value);
+              progressGuard->setLabelText(message);
+            },Qt::QueuedConnection);
+          },
+          [&]{return cancelRequested.load();});
+      if(cancelRequested.load()){
+        PdfRecognitionResult canceled;canceled.canceled=true;return canceled;
+      }
+      if(useAudiveris){
+        if(progressGuard)QMetaObject::invokeMethod(progressGuard,[progressGuard]{
+          if(progressGuard){progressGuard->setRange(0,0);progressGuard->setLabelText("Audiveris is reading the printed notation and building MusicXML…");}
+        },Qt::QueuedConnection);
+        PdfRecognitionResult external=AudiverisBridge::recognize(path,tempo,[&]{return cancelRequested.load();});
+        if(external.canceled||!external.notes.isEmpty())return external;
+      }
+      if(progressGuard)QMetaObject::invokeMethod(progressGuard,[progressGuard]{
+        if(progressGuard){progressGuard->setRange(0,100);progressGuard->setValue(0);progressGuard->setLabelText("Using VArpeggio's built-in PDF reader…");}
+      },Qt::QueuedConnection);
+      PdfRecognitionResult native=PdfRecognizer::recognize(path, tempo, [progressGuard](int value) {
+        if(progressGuard)QMetaObject::invokeMethod(progressGuard,[progressGuard,value]{if(progressGuard)progressGuard->setValue(value);},Qt::QueuedConnection);
+      }, [&] { return cancelRequested.load(); });
+      if(native.notes.isEmpty()&&!setupError.isEmpty())native.error=setupError+"\n\n"+native.error;
+      return native;
+    }));
+    loop.exec();
+    messageTimer.stop();
+    progress.close();
+    const PdfRecognitionResult recognized = watcher.result();
+    if (recognized.canceled) {
+      showNotice("Optical recognition was canceled. The original PDF is still "
+                 "open for viewing.",
+                 true);
+      return;
+    }
+    if (recognized.notes.isEmpty()) {
+      showNotice("The original PDF is open, but optical recognition did not "
+                 "produce playable notes.",
+                 true);
+      showPdfRecognitionDialog(
+          this, "This PDF could not be made playable",
+          recognized.error +
+              "\n\nThe original PDF is still available in Exact PDF view. For "
+              "the most reliable result, export MusicXML from a notation "
+              "program, save it beside this PDF with the same name, and reopen "
+              "it. Native recognition currently targets clean engraved piano "
+              "scores rather than handwriting or orchestral pages.");
+      return;
+    }
+
+    const QString recognizedTitle = info.completeBaseName();
+    setSong(recognizedTitle, recognized.notes, recognized.tempo);
+    m_score->setTimeSignatures(recognized.timeSignatures);
+    m_score->setKeySignatures(recognized.keySignatures);
+    if (m_pdfDocument->load(path) == QPdfDocument::Error::None)
+      setExactScoreAvailable();
+    showNotice(
+        QString("%1 recognized %2 playable notes. The "
+                "original PDF remains under Exact PDF; Live follow, Listen, "
+                "and Wait mode use the recognition draft. Check difficult "
+                "rhythms and accidentals before relying on it. Choose "
+                "MusicXML in Save to keep the transcription as XML.")
+            .arg(recognized.engine)
+            .arg(recognized.notes.size()));
+    return;
+  }
+
+  QVector<NoteEvent> notes;
+  QVector<TimeSignatureEvent> meters;
+  QVector<double> repeats;
+  QVector<KeySignatureEvent> keys;
+  QVector<StaffRestEvent> rests;
+  QString title;
+  int tempo = m_tempo;
+  QString error;
+  if (!MusicDocument::importFile(path, notes, title, tempo, &error, &meters,
+                                 &repeats, &keys, &rests)) {
+    QMessageBox::warning(this, "Could not import score", error);
+    return;
+  }
+  setSong(title, notes, tempo);
+  if (extension == "json" || extension == "varpeggio") {
+    setMode(Mode::Free);
+    m_title = title;
+    m_titleEdit->setText(title);
+    m_freePlayNotes = notes;
+    m_notes = notes;
+    m_freePlayTimeSignatures =
+        meters.isEmpty() ? QVector<TimeSignatureEvent>{{0.0, 4, 4}} : meters;
+    m_freePlayKeySignatures =
+        keys.isEmpty() ? QVector<KeySignatureEvent>{{0.0, 0}} : keys;
+    m_freePlayRepeatEnds = repeats;
+    m_freePlayRests = rests;
+    m_freePlayApplied = true;
+    refreshFreePlayStaff();
+    m_barLabel->setText("FREE PLAY   ·   Editable project loaded");
+    toast(
+        QString(
+            "Loaded %1 editable notes, %2 rests, and the saved notation marks")
+            .arg(notes.size())
+            .arg(rests.size()));
+    return;
+  }
+
+  // MusicXML and its same-named PDF are two halves of one score: XML drives
+  // playback/practice while the PDF preserves the exact engraved notation.
+  if (extension == "musicxml" || extension == "mxl" || extension == "xml") {
+    const QString sidecarPdf =
+        info.dir().filePath(info.completeBaseName() + ".pdf");
+    if (QFileInfo::exists(sidecarPdf) &&
+        m_pdfDocument->load(sidecarPdf) == QPdfDocument::Error::None) {
+      setExactScoreAvailable();
+      showNotice(
+          QString(
+              "Loaded %1 playable notes at %2 BPM. Choose Exact PDF for the "
+              "original engraving or Live follow to watch the score advance.")
+              .arg(notes.size())
+              .arg(tempo));
+      return;
+    }
+  }
+  toast(QString("Imported %1 notes from %2")
+            .arg(notes.size())
+            .arg(extension.toUpper()));
 }
-void MainWindow::exportScore(){const auto &notes=m_mode==Mode::Free?m_freePlayNotes:m_notes;if(notes.isEmpty()&&!(m_mode==Mode::Free&&!m_freePlayRests.isEmpty())){QMessageBox::information(this,"Nothing to save",m_mode==Mode::Free?"The Free Play grand staff is empty. Play a note or insert a rest first.":"Play a recording or import a note-aware score first.");return;}const QString exportTitle=m_mode==Mode::Free&&!m_freePlayApplied?"Free Play score":m_title;QString type=m_exportCombo->currentData().toString();QMap<QString,QString>ext{{"mid","mid"},{"musicxml","musicxml"},{"abc","abc"},{"wav","wav"},{"video","mp4"},{"svg","svg"},{"png","png"},{"pdf","pdf"},{"json","keyflow"},{"csv","csv"}};QSettings settings("Keyflow","Keyflow");const QString start=settings.value("dialogs/exportFolder",QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)).toString()+"/"+safeName(exportTitle)+"."+ext[type];QString path=QFileDialog::getSaveFileName(this,"Save "+m_exportCombo->currentText(),start);if(path.isEmpty())return;if(QFileInfo(path).suffix().isEmpty())path+="."+ext[type];settings.setValue("dialogs/exportFolder",QFileInfo(path).absolutePath());exportTo(type,path);}
+void MainWindow::exportScore(){const auto &notes=m_mode==Mode::Free?m_freePlayNotes:m_notes;if(notes.isEmpty()&&!(m_mode==Mode::Free&&!m_freePlayRests.isEmpty())){QMessageBox::information(this,"Nothing to save",m_mode==Mode::Free?"The Free Play grand staff is empty. Play a note or insert a rest first.":"Play a recording or import a note-aware score first.");return;}const QString exportTitle=m_mode==Mode::Free&&!m_freePlayApplied?"Free Play score":m_title;QString type=m_exportCombo->currentData().toString();QMap<QString,QString>ext{{"mid","mid"},{"musicxml","musicxml"},{"abc","abc"},{"wav","wav"},{"video","mp4"},{"svg","svg"},{"png","png"},{"pdf","pdf"},{"json","varpeggio"},{"csv","csv"}};QSettings settings("Voncloft","VArpeggio");const QString start=settings.value("dialogs/exportFolder",QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)).toString()+"/"+safeName(exportTitle)+"."+ext[type];QString path=QFileDialog::getSaveFileName(this,"Save "+m_exportCombo->currentText(),start);if(path.isEmpty())return;if(QFileInfo(path).suffix().isEmpty())path+="."+ext[type];settings.setValue("dialogs/exportFolder",QFileInfo(path).absolutePath());exportTo(type,path);}
 void MainWindow::exportTo(const QString &type,const QString &path){
     const auto &notes=m_mode==Mode::Free?m_freePlayNotes:m_notes;const QString title=m_mode==Mode::Free&&!m_freePlayApplied?"Free Play score":m_title;
     const QVector<TimeSignatureEvent> meters=m_mode==Mode::Free?m_freePlayTimeSignatures:QVector<TimeSignatureEvent>{};const QVector<double> repeats=m_mode==Mode::Free?m_freePlayRepeatEnds:QVector<double>{};const QVector<KeySignatureEvent> keys=m_mode==Mode::Free?m_freePlayKeySignatures:QVector<KeySignatureEvent>{};const QVector<StaffRestEvent> rests=m_mode==Mode::Free?m_freePlayRests:QVector<StaffRestEvent>{};
@@ -1138,7 +2319,7 @@ void MainWindow::openDetectorView(){
     stopPlayback(false);
     const QVector<NoteEvent> directorNotes=m_videoDetectionInfo.directorNotes.isEmpty()?m_notes:m_videoDetectionInfo.directorNotes;
     const double directorStart=m_videoDetectionInfo.directorNotes.isEmpty()?m_importedMediaStartMs/1000.0:m_videoDetectionInfo.directorStartSeconds;
-    QDialog dialog(this);dialog.setWindowTitle("Keyflow Director — source video + accepted bars");dialog.resize(1180,780);
+    QDialog dialog(this);dialog.setWindowTitle("VArpeggio Director — source video + accepted bars");dialog.resize(1180,780);
     dialog.setStyleSheet("QDialog{background:#edf2ef;color:#102f29} QLabel,QCheckBox{color:#102f29;font-size:12px} QPushButton{color:#102f29;background:#ffffff;border:2px solid #6b8b83;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:700;min-height:22px} QPushButton:hover{color:#ffffff;background:#256b61;border-color:#256b61} QComboBox{color:#102f29;background:#ffffff;border:2px solid #6b8b83;border-radius:7px;padding:7px 24px 7px 10px;font-size:13px;font-weight:700;min-width:72px} QComboBox QAbstractItemView{color:#102f29;background:#ffffff;selection-color:#ffffff;selection-background-color:#256b61} QSlider::groove:horizontal{height:8px;background:#bdcbc7;border-radius:4px} QSlider::handle:horizontal{width:20px;margin:-6px 0;background:#256b61;border:2px solid #ffffff;border-radius:10px}");
     auto *layout=new QVBoxLayout(&dialog);layout->setContentsMargins(10,10,10,10);layout->setSpacing(8);
     auto *viewer=new DetectorOverlayWidget(directorNotes,m_tempo,directorStart,m_videoDetectionInfo,&dialog);layout->addWidget(viewer,1);
@@ -1149,7 +2330,7 @@ void MainWindow::openDetectorView(){
     auto *sound=new QCheckBox("Hear source");sound->setChecked(false);
     auto *speed=new QComboBox;speed->addItem("0.25×",.25);speed->addItem("0.5×",.5);speed->addItem("1×",1.0);speed->setCurrentIndex(2);
     controls->addWidget(play);controls->addWidget(back);controls->addWidget(forward);controls->addWidget(position,1);controls->addWidget(clock);controls->addWidget(sound);controls->addWidget(speed);controls->addWidget(saveVideo);layout->addLayout(controls);
-    auto *hint=label("Scrub anywhere. The translucent outlines are exactly the notes and held lengths Keyflow accepted; the untouched source video remains visible underneath.");hint->setWordWrap(true);hint->setStyleSheet("color:#294b44;background:#ffffff;border:1px solid #aebfba;border-radius:6px;padding:7px 9px;font-size:12px");layout->addWidget(hint);
+    auto *hint=label("Scrub anywhere. The translucent outlines are exactly the notes and held lengths VArpeggio accepted; the untouched source video remains visible underneath.");hint->setWordWrap(true);hint->setStyleSheet("color:#294b44;background:#ffffff;border:1px solid #aebfba;border-radius:6px;padding:7px 9px;font-size:12px");layout->addWidget(hint);
 
     QMediaPlayer player;QAudioOutput audio;QVideoSink sink;
     audio.setMuted(true);audio.setVolume(1.0);player.setAudioOutput(&audio);player.setVideoOutput(&sink);player.setSource(QUrl::fromLocalFile(m_importedMediaPath));
@@ -1168,20 +2349,20 @@ void MainWindow::openDetectorView(){
     connect(sound,&QCheckBox::toggled,&dialog,[&audio](bool checked){audio.setMuted(!checked);});
     connect(speed,&QComboBox::currentIndexChanged,&dialog,[speed,&player](int){player.setPlaybackRate(speed->currentData().toDouble());});
     connect(saveVideo,&QPushButton::clicked,&dialog,[&,this]{
-        player.pause();QSettings settings("Keyflow","Keyflow");
+        player.pause();QSettings settings("Voncloft","VArpeggio");
         const QString folder=settings.value("dialogs/detectorExportFolder",QFileInfo(m_importedMediaPath).absolutePath()).toString();
-        QString suggested=folder+"/"+safeName(QFileInfo(m_importedMediaPath).completeBaseName())+"-keyflow-detector.mp4";
+        QString suggested=folder+"/"+safeName(QFileInfo(m_importedMediaPath).completeBaseName())+"-varpeggio-detector.mp4";
         QString output=QFileDialog::getSaveFileName(&dialog,"Save detector video",suggested,"MP4 video (*.mp4)");if(output.isEmpty())return;
         if(QFileInfo(output).suffix().isEmpty())output+=".mp4";settings.setValue("dialogs/detectorExportFolder",QFileInfo(output).absolutePath());
         QString exportError;if(saveDetectorVideo(output,m_importedMediaPath,directorNotes,m_tempo,directorStart,m_videoDetectionInfo,&dialog,&exportError))
-            QMessageBox::information(&dialog,"Detector video saved","Saved the original video and audio with Keyflow's accepted-note outlines to:\n\n"+output);
+            QMessageBox::information(&dialog,"Detector video saved","Saved the original video and audio with VArpeggio's accepted-note outlines to:\n\n"+output);
         else QMessageBox::warning(&dialog,"Could not save detector video",exportError);
     });
     player.play();dialog.exec();player.stop();
 }
 
 void MainWindow::openVideoLab(){
-    QSettings settings("Keyflow","Keyflow");
+    QSettings settings("Voncloft","VArpeggio");
     const QString startFolder=settings.value("dialogs/mediaFolder",QStandardPaths::writableLocation(QStandardPaths::MoviesLocation)).toString();
     const QString path=QFileDialog::getOpenFileName(
         this,"Video/audio to notes",startFolder,
@@ -1195,9 +2376,9 @@ void MainWindow::openVideoLab(){
     if(isVideo){
         QDialog choice(this);choice.setWindowTitle("Video to sheet music");choice.setMinimumWidth(720);
         auto*layout=new QVBoxLayout(&choice);layout->setContentsMargins(22,20,22,18);layout->setSpacing(10);
-        auto*heading=label("How should Keyflow read this video?");heading->setStyleSheet("font-size:20px;font-weight:800");layout->addWidget(heading);
-        auto*explanation=label("Keyflow checks the complete video, measures however many piano keys are actually visible at the bottom, and tracks which key changes or lights up. Automatic mode also compares visual drafts with the soundtrack and can use sound when the keyboard is hidden. Choose how it should find the notes:");explanation->setWordWrap(true);explanation->setStyleSheet("color:#5f716c;margin-bottom:6px");layout->addWidget(explanation);
-        auto*sourceCheck=label("SOURCE CHECK ON  ·  Keyflow renders the detected staff notes, compares that generated piano playback with the original soundtrack by octave and timing, and keeps the best visual draft.");sourceCheck->setWordWrap(true);sourceCheck->setStyleSheet("color:#205e54;background:#e9f5f1;border:1px solid #9fc9be;border-radius:8px;padding:9px 11px;font-weight:700");layout->addWidget(sourceCheck);
+        auto*heading=label("How should VArpeggio read this video?");heading->setStyleSheet("font-size:20px;font-weight:800");layout->addWidget(heading);
+        auto*explanation=label("VArpeggio checks the complete video, measures however many piano keys are actually visible at the bottom, and tracks which key changes or lights up. Automatic mode also compares visual drafts with the soundtrack and can use sound when the keyboard is hidden. Choose how it should find the notes:");explanation->setWordWrap(true);explanation->setStyleSheet("color:#5f716c;margin-bottom:6px");layout->addWidget(explanation);
+        auto*sourceCheck=label("SOURCE CHECK ON  ·  VArpeggio renders the detected staff notes, compares that generated piano playback with the original soundtrack by octave and timing, and keeps the best visual draft.");sourceCheck->setWordWrap(true);sourceCheck->setStyleSheet("color:#205e54;background:#e9f5f1;border:1px solid #9fc9be;border-radius:8px;padding:9px 11px;font-weight:700");layout->addWidget(sourceCheck);
         auto makeChoice=[&](const QString &text){auto*b=button(text,"conversionChoice");b->setMinimumHeight(66);b->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Fixed);b->setStyleSheet("QPushButton{text-align:left;background:#fffefa;border:1px solid #c8c9c2;border-radius:9px;padding:10px 14px;font-weight:700}QPushButton:hover{color:white;background:#2d7d70;border-color:#2d7d70}");layout->addWidget(b);return b;};
         auto*automaticButton=makeChoice("Automatic (recommended)\nStrip highlighted keys, render those staff notes, source-check them, and use audio only if the keyboard is unreadable");
         auto*visualButton=makeChoice("Highlighted keyboard only\nMap every changed key at the bottom, regardless of keyboard size or highlight color");
@@ -1212,7 +2393,7 @@ void MainWindow::openVideoLab(){
     }else{
         const auto answer=QMessageBox::information(
             this,"Audio to sheet music",
-            "Keyflow will analyze the complete recording and create a draft piano score, including clean chords when they can be separated. Longer files take longer. Solo piano works best; vocals, drums, effects, and orchestral layers reduce accuracy.",
+            "VArpeggio will analyze the complete recording and create a draft piano score, including clean chords when they can be separated. Longer files take longer. Solo piano works best; vocals, drums, effects, and orchestral layers reduce accuracy.",
             QMessageBox::Ok|QMessageBox::Cancel);
         if(answer!=QMessageBox::Ok)return;
     }
@@ -1286,16 +2467,16 @@ bool MainWindow::transcribeMediaPath(const QString &path,TranscriptionMode mode,
     if(engraved){
         progress.setRange(0,100);progress.setValue(100);
         const QString sourceMessage=usedAudio
-            ?(usedAudioFallback.load()?"The keyboard picture was not reliable enough, so Keyflow analyzed the complete soundtrack.":"Keyflow analyzed the complete recording into a draft piano score.")
-            :"Keyflow read the falling notes from the complete video.";
+            ?(usedAudioFallback.load()?"The keyboard picture was not reliable enough, so VArpeggio analyzed the complete soundtrack.":"VArpeggio analyzed the complete recording into a draft piano score.")
+            :"VArpeggio read the falling notes from the complete video.";
         QString tempoMessage;
-        if(transcriptionInfo.tempoEstimated){const QString confidence=transcriptionInfo.tempoConfidence>=.65?"high":transcriptionInfo.tempoConfidence>=.35?"medium":"low";tempoMessage=QString(" Keyflow estimated %1 BPM from the timing (%2 confidence).").arg(resolvedTempo).arg(confidence);}
-        else if(transcriptionTempo<=0)tempoMessage=QString(" The tempo was unclear, so Keyflow used %1 BPM; adjust it with −/+ if needed.").arg(resolvedTempo);
+        if(transcriptionInfo.tempoEstimated){const QString confidence=transcriptionInfo.tempoConfidence>=.65?"high":transcriptionInfo.tempoConfidence>=.35?"medium":"low";tempoMessage=QString(" VArpeggio estimated %1 BPM from the timing (%2 confidence).").arg(resolvedTempo).arg(confidence);}
+        else if(transcriptionTempo<=0)tempoMessage=QString(" The tempo was unclear, so VArpeggio used %1 BPM; adjust it with −/+ if needed.").arg(resolvedTempo);
         else tempoMessage=QString(" Using the requested %1 BPM.").arg(resolvedTempo);
         QString verification;
         if(!usedAudio&&transcriptionInfo.refinementPasses>0){
             const QString pitchMatch=transcriptionInfo.renderedAgreement>=.68?"strong":transcriptionInfo.renderedAgreement>=.45?"partial":"weak";
-            verification=QString(" Keyflow rendered %1 visual %2 from tracked falling bars, highlighted keys, and scan-line fallbacks, compared each draft's generated pitches and timing with the original soundtrack, and kept the best match (%3 pitch match).")
+            verification=QString(" VArpeggio rendered %1 visual %2 from tracked falling bars, highlighted keys, and scan-line fallbacks, compared each draft's generated pitches and timing with the original soundtrack, and kept the best match (%3 pitch match).")
                 .arg(transcriptionInfo.refinementPasses)
                 .arg(transcriptionInfo.refinementPasses==1?"draft":"drafts")
                 .arg(pitchMatch);
@@ -1313,7 +2494,7 @@ void MainWindow::openRoutineDialog(){
     QDialog d(this);d.setWindowTitle("Daily practice plan");d.setMinimumWidth(620);d.setModal(true);
     auto*l=new QVBoxLayout(&d);l->setContentsMargins(24,22,24,20);l->setSpacing(12);
     auto*dateNav=new QHBoxLayout;auto*previousDay=button("← Previous day","routineDialogSecondary");auto*todayButton=button("Today","routineDialogSecondary");auto*nextDay=button("Next day →","routineDialogSecondary");auto*head=label("","routineDialogTitle");head->setAlignment(Qt::AlignCenter);head->setStyleSheet("font-size:22px;font-weight:800");dateNav->addWidget(previousDay);dateNav->addWidget(todayButton);dateNav->addWidget(head,1);dateNav->addWidget(nextDay);l->addLayout(dateNav);
-    auto*intro=label("Start once, then use Previous and Next above the score. Keyflow carries you through both hands and the full piece without reopening this window.");intro->setWordWrap(true);intro->setStyleSheet("color:#526862;margin-bottom:4px");l->addWidget(intro);
+    auto*intro=label("Start once, then use Previous and Next above the score. VArpeggio carries you through both hands and the full piece without reopening this window.");intro->setWordWrap(true);intro->setStyleSheet("color:#526862;margin-bottom:4px");l->addWidget(intro);
     QVector<QPair<QLabel*,QLabel*>> planRows;auto addPlanRow=[&](const QString &number){auto*row=new QFrame;row->setStyleSheet("QFrame{background:#fffefa;border:1px solid #dedbd1;border-radius:9px}");auto*rl=new QHBoxLayout(row);rl->setContentsMargins(13,10,13,10);auto*n=label(number);n->setStyleSheet("color:#ef775f;font-weight:800;font-size:16px;border:0");rl->addWidget(n);auto*copy=new QVBoxLayout;copy->setSpacing(1);auto*t=label("");t->setStyleSheet("font-weight:800;border:0");auto*sub=label("");sub->setStyleSheet("color:#71807c;border:0");copy->addWidget(t);copy->addWidget(sub);rl->addLayout(copy,1);l->addWidget(row);planRows.append(qMakePair(t,sub));};for(const QString &number:{QStringLiteral("01"),QStringLiteral("02"),QStringLiteral("03"),QStringLiteral("04")})addPlanRow(number);
     auto*variation=label("");variation->setStyleSheet("color:#71807c");
     auto*buttons=new QHBoxLayout;auto*shuffle=button("Change chord order","routineDialogSecondary");auto*cancel=button("Not now","routineDialogSecondary");auto*start=button("Start the full plan  →","routineDialogPrimary");start->setDefault(true);for(auto*b:{shuffle,cancel,start}){b->setMinimumHeight(42);b->setMinimumWidth(132);}buttons->addWidget(variation);buttons->addWidget(shuffle);buttons->addStretch();buttons->addWidget(cancel);buttons->addWidget(start);l->addLayout(buttons);
@@ -1347,7 +2528,7 @@ void MainWindow::loadRoutineStep(int step){
     if(auto*b=m_handButtons->button(stage.hand<0?2:stage.hand))b->setChecked(true);setHandFilter(stage.hand);
     m_routineSession->show();m_routineStepLabel->setText(QString("DAILY PLAN · STEP %1 OF %2").arg(step+1).arg(stages.size()));m_routineDetailLabel->setText(stage.title+"  ·  "+stage.detail);m_routinePreviousButton->setEnabled(step>0);m_routineNextButton->setText(step==stages.size()-1?"Finish plan  ✓":"Next step  →");
     if(stage.type=="ear"){m_earTraining=true;m_earTrainingRound=0;m_earTrainingSolved=0;m_attempts=m_correct=m_streak=m_bestStreak=0;updateStats();startEarTrainingRound();}
-    QSettings s("Keyflow","Keyflow");s.setValue("lastRoutineDate",m_routinePlanDate);s.setValue("routineVariation",m_routineVariation);s.setValue("routineStep",step);
+    QSettings s("Voncloft","VArpeggio");s.setValue("lastRoutineDate",m_routinePlanDate);s.setValue("routineVariation",m_routineVariation);s.setValue("routineStep",step);
     toast(QString("Practice plan step %1: %2").arg(step+1).arg(stage.title));
 }
 
@@ -1378,4 +2559,4 @@ void MainWindow::toast(const QString&text){statusBar()->show();statusBar()->show
 
 void MainWindow::keyPressEvent(QKeyEvent*e){if(e->isAutoRepeat()){e->accept();return;}if(m_keyMap.contains(e->key())&&!qobject_cast<QLineEdit*>(focusWidget())){userNoteOn(m_keyMap[e->key()],100);e->accept();return;}if(e->key()==Qt::Key_Space&&!qobject_cast<QLineEdit*>(focusWidget())){togglePlayback();e->accept();return;}if(e->key()==Qt::Key_R&&!qobject_cast<QLineEdit*>(focusWidget())){toggleRecord();e->accept();return;}if(e->key()==Qt::Key_Escape){stopPlayback(false);if(m_recording)finishRecording();m_synth.allOff();e->accept();return;}QMainWindow::keyPressEvent(e);}
 void MainWindow::keyReleaseEvent(QKeyEvent*e){if(e->isAutoRepeat()){e->accept();return;}if(m_keyMap.contains(e->key())){userNoteOff(m_keyMap[e->key()]);e->accept();return;}QMainWindow::keyReleaseEvent(e);}
-void MainWindow::closeEvent(QCloseEvent*e){if(m_recording){auto r=QMessageBox::question(this,"Recording in progress","Stop recording and close Keyflow?");if(r!=QMessageBox::Yes){e->ignore();return;}finishRecording();}m_sourcePlayer->stop();m_midi.stop();m_midiOutput.allNotesOff();m_midiOutput.close();m_synth.allOff();e->accept();}
+void MainWindow::closeEvent(QCloseEvent*e){if(m_recording){auto r=QMessageBox::question(this,"Recording in progress","Stop recording and close VArpeggio?");if(r!=QMessageBox::Yes){e->ignore();return;}finishRecording();}m_sourcePlayer->stop();m_midi.stop();m_midiOutput.allNotesOff();m_midiOutput.close();m_synth.allOff();e->accept();}

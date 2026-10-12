@@ -454,7 +454,7 @@ TempoEstimate estimateTempoFromOnsets(const OnsetAnalysis &analysis) {
     const double doubleScore=scoreAt(rawRefined*2.0);
     const bool lowHalfPulse=!tripletSubdivision&&rawRefined<60.0&&rawRefined*2.0<=180.0&&doubleScore>=rawBestScore*.72;
     if(lowHalfPulse)refined=rawRefined*2.0;
-    if(qEnvironmentVariableIsSet("KEYFLOW_TEMPO_DEBUG"))
+    if(qEnvironmentVariableIsSet("VARPEGGIO_TEMPO_DEBUG"))
         std::fprintf(stderr,"tempo raw %.2f score %.6f half %.6f double %.6f third %.6f selected %.2f\n",rawRefined,rawBestScore,scoreAt(rawRefined/2.0),doubleScore,thirdScore,refined);
     double runner=0;
     for(int i=1;i+1<candidateCount;++i){
@@ -676,7 +676,7 @@ bool MusicDocument::importFile(const QString &path, QVector<NoteEvent> &notes, Q
     if (ext=="mid" || ext=="midi") ok = importMidi(data, notes, tempo, error);
     else if (ext=="musicxml" || ext=="xml" || ext=="mxl") ok = importMusicXml(data, notes, tempo, title, error);
     else if (ext=="abc") ok = importAbc(data, notes, tempo, error);
-    else if (ext=="json" || ext=="keyflow") ok = importJson(data, notes, tempo, title, error,timeSignatures,repeatEnds,keySignatures,rests);
+    else if (ext=="json" || ext=="varpeggio") ok = importJson(data, notes, tempo, title, error,timeSignatures,repeatEnds,keySignatures,rests);
     else { setError(error, "This score format is not supported for note-aware import."); return false; }
     if (ok) notes = sortNotes(notes);
     return ok;
@@ -764,7 +764,7 @@ bool MusicDocument::importAbc(const QByteArray &data, QVector<NoteEvent> &notes,
 }
 
 bool MusicDocument::importJson(const QByteArray &data, QVector<NoteEvent> &notes, int &tempo, QString &title, QString *error,QVector<TimeSignatureEvent>*timeSignatures,QVector<double>*repeatEnds,QVector<KeySignatureEvent>*keySignatures,QVector<StaffRestEvent>*rests) {
-    auto doc=QJsonDocument::fromJson(data); if(!doc.isObject()){setError(error,"Invalid Keyflow project.");return false;} auto o=doc.object(); tempo=o.value("tempo").toInt(tempo); title=o.value("title").toString(title);
+    auto doc=QJsonDocument::fromJson(data); if(!doc.isObject()){setError(error,"Invalid VArpeggio project.");return false;} auto o=doc.object();if(o.value("format").toString()!="varpeggio-project"){setError(error,"This is not a VArpeggio project.");return false;}tempo=o.value("tempo").toInt(tempo); title=o.value("title").toString(title);
     for(auto v:o.value("notes").toArray()){auto n=v.toObject();notes<<NoteEvent{n.value("note").toInt(),n.value("start").toDouble(),n.value("duration").toDouble(1),n.value("velocity").toInt(90),n.value("hand").toString()=="left"?Hand::Left:Hand::Right,AccidentalMark(qBound(0,n.value("accidental").toInt(0),3))};}
     if(timeSignatures){timeSignatures->clear();for(const auto &value:o.value("timeSignatures").toArray()){const auto event=value.toObject();timeSignatures->append({event.value("beat").toDouble(),event.value("beats").toInt(4),event.value("beatType").toInt(4)});}}
     if(keySignatures){keySignatures->clear();for(const auto &value:o.value("keySignatures").toArray()){const auto event=value.toObject();keySignatures->append({event.value("beat").toDouble(),qBound(-7,event.value("fifths").toInt(),7)});}}
@@ -795,12 +795,17 @@ bool MusicDocument::saveEngravedScore(const QString &musicXmlPath,const QString 
                                       const QVector<StaffRestEvent> &rests){
     QTemporaryDir temp;
     if(!temp.isValid()){setError(error,"Could not create the score workspace.");return false;}
-    const QString project=temp.filePath("score.keyflow");
+    const QString project=temp.filePath("score.varpeggio");
     if(!saveJson(project,notes,tempo,title,error,timeSignatures,repeatEnds,keySignatures,rests))return false;
-    const QString helper=QCoreApplication::applicationDirPath()+"/keyflow_score.py";
-    if(!QFileInfo::exists(helper)){setError(error,"The detailed score engraver is missing from the build folder.");return false;}
-    const QString pythonRuntime=QCoreApplication::applicationDirPath()+"/python/verovio";
-    if(!QFileInfo::exists(pythonRuntime)){setError(error,"The bundled Verovio score engine is missing. Rebuild Keyflow so the complete video-to-score runtime is copied beside the app.");return false;}
+    QString helper=QCoreApplication::applicationDirPath()+"/varpeggio_score.py";
+    QString pythonRuntime=QCoreApplication::applicationDirPath()+"/python/verovio";
+#ifdef VARPEGGIO_LIBEXECDIR
+    const QString installedRuntime=QDir(QCoreApplication::applicationDirPath()).absoluteFilePath("../"+QStringLiteral(VARPEGGIO_LIBEXECDIR));
+    if(!QFileInfo::exists(helper))helper=installedRuntime+"/varpeggio_score.py";
+    if(!QFileInfo::exists(pythonRuntime))pythonRuntime=installedRuntime+"/python/verovio";
+#endif
+    if(!QFileInfo::exists(helper)){setError(error,"The detailed score engraver is missing from the VArpeggio installation.");return false;}
+    if(!QFileInfo::exists(pythonRuntime)){setError(error,"The bundled Verovio score engine is missing from the VArpeggio installation.");return false;}
     for(const QString &program:{QStringLiteral("python3"),QStringLiteral("rsvg-convert"),QStringLiteral("pdfunite"),QStringLiteral("pdfattach")})if(QStandardPaths::findExecutable(program).isEmpty()){setError(error,program+" is required to create the engraved PDF but is not installed.");return false;}
     QStringList arguments{helper,"--project",project,"--musicxml",musicXmlPath};
     if(!pdfPath.isEmpty())arguments<<QStringLiteral("--pdf")<<pdfPath;
@@ -818,7 +823,7 @@ bool MusicDocument::saveEngravedScore(const QString &musicXmlPath,const QString 
 
 bool MusicDocument::saveAbc(const QString&path,const QVector<NoteEvent>&source,int tempo,const QString&title,QString*error){auto notes=sortNotes(source);QString s="X:1\nT:"+title+"\nM:4/4\nL:1/4\nQ:1/4="+QString::number(tempo)+"\nK:C\n";int i=0;while(i<notes.size()){double start=notes[i].start;QVector<NoteEvent>g;while(i<notes.size()&&qAbs(notes[i].start-start)<.001)g<<notes[i++];if(g.size()>1)s+='[';for(const auto&n:g){int pc=n.note%12;QString name=QString::fromLatin1(kNames[pc]).replace("#","^");if(n.note>=72)name=name.toLower()+QString(n.note/12-6,'\'');else if(n.note<60)name+=QString(5-n.note/12,',');s+=name;}if(g.size()>1)s+=']';double d=g[0].duration;if(d<.75)s+="/2";else if(d>1.5)s+='2';s+=' ';}return writeAll(path,s.toUtf8(),error);}
 
-bool MusicDocument::saveJson(const QString&path,const QVector<NoteEvent>&notes,int tempo,const QString&title,QString*error,const QVector<TimeSignatureEvent>&timeSignatures,const QVector<double>&repeatEnds,const QVector<KeySignatureEvent>&keySignatures,const QVector<StaffRestEvent>&rests){QJsonObject o{{"format","keyflow-project"},{"version",2},{"title",title},{"tempo",tempo}};QJsonArray a;for(const auto&n:notes)a.append(QJsonObject{{"note",n.note},{"start",n.start},{"duration",n.duration},{"velocity",n.velocity},{"hand",n.hand==Hand::Left?"left":"right"},{"accidental",int(n.accidental)}});o["notes"]=a;QJsonArray meters;for(const auto&m:timeSignatures)meters.append(QJsonObject{{"beat",m.beat},{"beats",m.beats},{"beatType",m.beatType}});o["timeSignatures"]=meters;QJsonArray keys;for(const auto&k:keySignatures)keys.append(QJsonObject{{"beat",k.beat},{"fifths",k.fifths}});o["keySignatures"]=keys;QJsonArray repeats;for(double beat:repeatEnds)repeats.append(beat);o["repeatEnds"]=repeats;QJsonArray restArray;for(const auto&r:rests)restArray.append(QJsonObject{{"beat",r.beat},{"duration",r.duration},{"hand",r.hand==Hand::Left?"left":"right"}});o["rests"]=restArray;return writeAll(path,QJsonDocument(o).toJson(QJsonDocument::Indented),error);}
+bool MusicDocument::saveJson(const QString&path,const QVector<NoteEvent>&notes,int tempo,const QString&title,QString*error,const QVector<TimeSignatureEvent>&timeSignatures,const QVector<double>&repeatEnds,const QVector<KeySignatureEvent>&keySignatures,const QVector<StaffRestEvent>&rests){QJsonObject o{{"format","varpeggio-project"},{"version",2},{"title",title},{"tempo",tempo}};QJsonArray a;for(const auto&n:notes)a.append(QJsonObject{{"note",n.note},{"start",n.start},{"duration",n.duration},{"velocity",n.velocity},{"hand",n.hand==Hand::Left?"left":"right"},{"accidental",int(n.accidental)}});o["notes"]=a;QJsonArray meters;for(const auto&m:timeSignatures)meters.append(QJsonObject{{"beat",m.beat},{"beats",m.beats},{"beatType",m.beatType}});o["timeSignatures"]=meters;QJsonArray keys;for(const auto&k:keySignatures)keys.append(QJsonObject{{"beat",k.beat},{"fifths",k.fifths}});o["keySignatures"]=keys;QJsonArray repeats;for(double beat:repeatEnds)repeats.append(beat);o["repeatEnds"]=repeats;QJsonArray restArray;for(const auto&r:rests)restArray.append(QJsonObject{{"beat",r.beat},{"duration",r.duration},{"hand",r.hand==Hand::Left?"left":"right"}});o["rests"]=restArray;return writeAll(path,QJsonDocument(o).toJson(QJsonDocument::Indented),error);}
 bool MusicDocument::saveCsv(const QString&path,const QVector<NoteEvent>&notes,QString*error){QByteArray b="note,name,start_beats,duration_beats,velocity,hand\n";for(const auto&n:notes)b+=QByteArray::number(n.note)+','+noteName(n.note).toUtf8()+','+QByteArray::number(n.start,'f',3)+','+QByteArray::number(n.duration,'f',3)+','+QByteArray::number(n.velocity)+','+(n.hand==Hand::Left?"left":"right")+'\n';return writeAll(path,b,error);}
 
 bool MusicDocument::saveWav(const QString&path,const QVector<NoteEvent>&notes,int tempo,QString*error){const int sr=44100;double spb=60.0/qMax(1,tempo),length=1;for(const auto&n:notes)length=qMax(length,(n.start+n.duration)*spb+1);int frames=int(length*sr);QVector<float>mix(frames);for(const auto&n:notes){int a=int(n.start*spb*sr),z=qMin(frames,int((n.start+n.duration)*spb*sr));double phase=0,inc=2*M_PI*440.0*qPow(2.0,(n.note-69)/12.0)/sr,amp=.14*n.velocity/127.0;for(int i=a;i<z;++i){double t=(i-a)/double(sr),remain=(z-i)/double(sr);double env=qMin(1.0,t/.01)*qMin(1.0,remain/.08)*qExp(-t*.35);mix[i]+=float((qSin(phase)+.22*qSin(phase*2))*amp*env);phase+=inc;}}QByteArray pcm;pcm.reserve(frames*4);for(float f:mix){qint16 v=qBound(-32767,int(f*32767),32767);putLe16(pcm,v);putLe16(pcm,v);}QByteArray out="RIFF";putLe32(out,36+pcm.size());out+="WAVEfmt ";putLe32(out,16);putLe16(out,1);putLe16(out,2);putLe32(out,sr);putLe32(out,sr*4);putLe16(out,4);putLe16(out,16);out+="data";putLe32(out,pcm.size());out+=pcm;return writeAll(path,out,error);}
@@ -1151,7 +1156,7 @@ bool transcribeDetailedPianoRoll(const QString &path,int tempo,QVector<NoteEvent
         centers.fill(std::numeric_limits<double>::quiet_NaN());int whiteIndex=0;whiteWidth=width/52.0;visibleWhiteCount=52;visibleLow=21;visibleHigh=108;
         for(int midi=21;midi<=108;++midi){if(isBlack(midi))centers[midi]=whiteIndex*whiteWidth;else{centers[midi]=(whiteIndex+.5)*whiteWidth;++whiteIndex;}}
     }
-    if(qEnvironmentVariableIsSet("KEYFLOW_TRANSCRIPTION_DEBUG"))std::fprintf(stderr,"keyboard %d white keys, MIDI %d-%d, width %.2f, top/bottom %d/%d, geometry %.2fs\n",visibleWhiteCount,visibleLow,visibleHigh,whiteWidth,keyboardTop,keyboardBottom,geometrySecond);
+    if(qEnvironmentVariableIsSet("VARPEGGIO_TRANSCRIPTION_DEBUG"))std::fprintf(stderr,"keyboard %d white keys, MIDI %d-%d, width %.2f, top/bottom %d/%d, geometry %.2fs\n",visibleWhiteCount,visibleLow,visibleHigh,whiteWidth,keyboardTop,keyboardBottom,geometrySecond);
     const int visibleKeyHeight=qMax(24,keyboardBottom-keyboardTop);
     const int keyBlackY=qBound(0,keyboardTop+qRound(visibleKeyHeight*.30),height-probeHeight);
     const int keyWhiteY=qBound(0,keyboardTop+qRound(visibleKeyHeight*.84),height-probeHeight);
@@ -1318,7 +1323,7 @@ bool transcribeDetailedPianoRoll(const QString &path,int tempo,QVector<NoteEvent
     // line is note-on and its upper edge crossing is note-off.  This preserves
     // long holds and keeps successive bars on the same key as separate notes.
     // It follows the central idea of LumaChords' note-rain tracker while using
-    // Keyflow's already calibrated key centres and soundtrack validation.
+    // VArpeggio's already calibrated key centres and soundtrack validation.
     Detection fullBarDetection{-3.0,QVector<Lane>(109),QVector<Lane>(109),{},{},{}};
     // Short repeated blocks in 60 fps tutorials can appear and separate
     // entirely between two 12 fps samples.  Thirty samples per second keeps
@@ -1603,7 +1608,7 @@ bool transcribeDetailedPianoRoll(const QString &path,int tempo,QVector<NoteEvent
                 if(count[0]>=3&&count[1]>=3){const int leftGroup=(midiSum[0]/count[0])<=(midiSum[1]/count[1])?0:1;for(int j=0;j<colouredGates.size();++j)fullBarDetection.gates[colouredGates[j]].hand=groups[j]==leftGroup?0:1;}
             }
         }
-        if(qEnvironmentVariableIsSet("KEYFLOW_TRANSCRIPTION_DEBUG")){int left=0,right=0,unknown=0;for(const auto &gate:fullBarDetection.gates)gate.hand==0?++left:(gate.hand==1?++right:++unknown);std::fprintf(stderr,"full-bar tracker frames %d tracks %lld gates %lld velocity %.2f playY %d hands %d/%d/%d\n",barFrameNumber,qint64(barTracks.size()),qint64(fullBarDetection.gates.size()),velocityConsensus(),playY,left,right,unknown);}
+        if(qEnvironmentVariableIsSet("VARPEGGIO_TRANSCRIPTION_DEBUG")){int left=0,right=0,unknown=0;for(const auto &gate:fullBarDetection.gates)gate.hand==0?++left:(gate.hand==1?++right:++unknown);std::fprintf(stderr,"full-bar tracker frames %d tracks %lld gates %lld velocity %.2f playY %d hands %d/%d/%d\n",barFrameNumber,qint64(barTracks.size()),qint64(fullBarDetection.gates.size()),velocityConsensus(),playY,left,right,unknown);}
         if(info){
             info->videoWidth=width;info->videoHeight=height;info->keyboardTop=keyboardTop;info->keyboardBottom=keyboardBottom;
             info->visibleLow=visibleLow;info->visibleHigh=visibleHigh;info->whiteKeyWidth=whiteWidth;
@@ -1736,7 +1741,7 @@ bool transcribeDetailedPianoRoll(const QString &path,int tempo,QVector<NoteEvent
         // are immune to decorative flashes at the keyboard. Prefer that
         // evidence when the soundtrack checks are at least credible.
         if(detections[detectionIndex].distance< -2.5&&rendered>=.22&&timing.score>=.17)score+=.13;
-        if(qEnvironmentVariableIsSet("KEYFLOW_TRANSCRIPTION_DEBUG"))std::fprintf(stderr,"row %.3f gates %lld draft %lld timing %.3f render %.3f density %.2f coverage %.2f fragments %.3f quality %.3f start %.2f\n",detections[detectionIndex].distance,qint64(gates.size()),qint64(draft.size()),timing.score,rendered,density,coverage,fragmentPenalty,score,sourceStart);
+        if(qEnvironmentVariableIsSet("VARPEGGIO_TRANSCRIPTION_DEBUG"))std::fprintf(stderr,"row %.3f gates %lld draft %lld timing %.3f render %.3f density %.2f coverage %.2f fragments %.3f quality %.3f start %.2f\n",detections[detectionIndex].distance,qint64(gates.size()),qint64(draft.size()),timing.score,rendered,density,coverage,fragmentPenalty,score,sourceStart);
         attempts.append({std::move(draft),timing,rendered,score,sourceStart,detectionIndex});
     }
     // The conservative surface pass knows which keys stayed down, while the
@@ -1800,7 +1805,7 @@ bool transcribeDetailedPianoRoll(const QString &path,int tempo,QVector<NoteEvent
         // stays within a credible piano density.
         if(rendered>=.45&&rendered>=rawAttempt.rendered-.015&&refined.size()<=rawAttempt.notes.size()*1.75)
             score=qMax(score,rawAttempt.score+.015);
-        if(qEnvironmentVariableIsSet("KEYFLOW_TRANSCRIPTION_DEBUG"))std::fprintf(stderr,"refined surface draft %lld timing %.3f render %.3f density %.2f fragments %.3f quality %.3f start %.2f\n",qint64(refined.size()),splitAttempt.timing.score,rendered,density,fragmentPenalty,score,splitAttempt.sourceStart);
+        if(qEnvironmentVariableIsSet("VARPEGGIO_TRANSCRIPTION_DEBUG"))std::fprintf(stderr,"refined surface draft %lld timing %.3f render %.3f density %.2f fragments %.3f quality %.3f start %.2f\n",qint64(refined.size()),splitAttempt.timing.score,rendered,density,fragmentPenalty,score,splitAttempt.sourceStart);
         attempts.append({std::move(refined),splitAttempt.timing,rendered,score,splitAttempt.sourceStart,splitAttempt.detection});
     }
     // The full-rectangle pass has the best durations, but effects can erase a
@@ -1867,9 +1872,9 @@ bool transcribeDetailedPianoRoll(const QString &path,int tempo,QVector<NoteEvent
         const double density=hybrid.size()/qMax(1.0,(hybrid.last().start+hybrid.last().duration)*secondsPerBeat);
         double score=.65*(rendered>=0?rendered:.45)+.15*(full.timing.score>=0?full.timing.score:.25)+.12*(1.0-std::exp(-density/1.6))+.08+.13;
         if(added>0&&added<=full.notes.size()*.35&&rendered>=full.rendered-.02)score=qMax(score,full.score+.02);
-        if(qEnvironmentVariableIsSet("KEYFLOW_TRANSCRIPTION_DEBUG"))std::fprintf(stderr,"hybrid full+surface draft %lld added %d timing %.3f render %.3f quality %.3f start %.2f\n",qint64(hybrid.size()),added,full.timing.score,rendered,score,full.sourceStart);
+        if(qEnvironmentVariableIsSet("VARPEGGIO_TRANSCRIPTION_DEBUG"))std::fprintf(stderr,"hybrid full+surface draft %lld added %d timing %.3f render %.3f quality %.3f start %.2f\n",qint64(hybrid.size()),added,full.timing.score,rendered,score,full.sourceStart);
         attempts.append({std::move(hybrid),full.timing,rendered,score,full.sourceStart,full.detection});
-        }else if(qEnvironmentVariableIsSet("KEYFLOW_TRANSCRIPTION_DEBUG"))std::fprintf(stderr,"hybrid full+surface rejected: %d additions for %lld tracked bars\n",added,qint64(full.notes.size()));
+        }else if(qEnvironmentVariableIsSet("VARPEGGIO_TRANSCRIPTION_DEBUG"))std::fprintf(stderr,"hybrid full+surface rejected: %d additions for %lld tracked bars\n",added,qint64(full.notes.size()));
     }
     const int minimumPlausibleNotes=qMax(8,qRound((durationSeconds-analysisStartSecond)*.45));
     attempts.erase(std::remove_if(attempts.begin(),attempts.end(),[&](const DraftQuality &attempt){
@@ -1877,7 +1882,7 @@ bool transcribeDetailedPianoRoll(const QString &path,int tempo,QVector<NoteEvent
         return attempt.notes.size()<minimumPlausibleNotes||pitches.size()<3;
     }),attempts.end());
     if(attempts.isEmpty()){setError(error,"The falling notes did not produce a playable draft.");return false;}
-    const QString dumpDirectory=qEnvironmentVariable("KEYFLOW_TRANSCRIPTION_DUMP_DIR");
+    const QString dumpDirectory=qEnvironmentVariable("VARPEGGIO_TRANSCRIPTION_DUMP_DIR");
     if(!dumpDirectory.isEmpty()){
         QDir().mkpath(dumpDirectory);
         for(int i=0;i<attempts.size();++i){
@@ -1885,7 +1890,7 @@ bool transcribeDetailedPianoRoll(const QString &path,int tempo,QVector<NoteEvent
             const double distance=detections[detectionIndex].distance;
             const QString row=distance< -2.5?QStringLiteral("full-bars"):(distance<0?QStringLiteral("surface"):QString::number(distance,'f',3));
             QString ignored;
-            MusicDocument::saveJson(QDir(dumpDirectory).filePath(QString("candidate-%1-%2.keyflow").arg(i).arg(row)),attempts[i].notes,resolvedTempo,QString("debug candidate %1").arg(row),&ignored);
+            MusicDocument::saveJson(QDir(dumpDirectory).filePath(QString("candidate-%1-%2.varpeggio").arg(i).arg(row)),attempts[i].notes,resolvedTempo,QString("debug candidate %1").arg(row),&ignored);
         }
     }
     const auto bestAttempt=std::max_element(attempts.cbegin(),attempts.cend(),[](const auto&a,const auto&b){return a.score<b.score;});
@@ -1903,9 +1908,9 @@ bool transcribeDetailedPianoRoll(const QString &path,int tempo,QVector<NoteEvent
             if(valid){const double agreement=compareRenderedDraft(shifted,resolvedTempo,soundtrack,bestAttempt->sourceStart);if(agreement>candidateRendered){candidateRendered=agreement;candidateShift=semitones;}}
         }
         if(candidateShift&&candidateRendered>=bestAttempt->rendered+.025){selectedPitchShift=candidateShift;selectedRendered=candidateRendered;}
-        if(qEnvironmentVariableIsSet("KEYFLOW_TRANSCRIPTION_DEBUG"))std::fprintf(stderr,"source pitch retry selected %+d (%.3f -> %.3f)\n",selectedPitchShift,bestAttempt->rendered,selectedRendered);
+        if(qEnvironmentVariableIsSet("VARPEGGIO_TRANSCRIPTION_DEBUG"))std::fprintf(stderr,"source pitch retry selected %+d (%.3f -> %.3f)\n",selectedPitchShift,bestAttempt->rendered,selectedRendered);
     }
-    if(qEnvironmentVariableIsSet("KEYFLOW_TRANSCRIPTION_DEBUG")&&!soundtrack.samples.isEmpty()){
+    if(qEnvironmentVariableIsSet("VARPEGGIO_TRANSCRIPTION_DEBUG")&&!soundtrack.samples.isEmpty()){
         for(int semitones=-12;semitones<=12;++semitones){
             QVector<NoteEvent> shifted=bestAttempt->notes;bool valid=true;
             for(auto &note:shifted){note.note+=semitones;if(note.note<21||note.note>108){valid=false;break;}}
