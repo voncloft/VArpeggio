@@ -65,6 +65,9 @@ struct TranscriptionInfo {
 class MusicDocument {
 public:
     static QString noteName(int midi, bool withOctave = true);
+    // Infer the conventional key signature that best explains the pitch
+    // collection. Positive values are sharps, negative values are flats.
+    static int inferKeySignature(const QVector<NoteEvent> &notes);
     static QVector<NoteEvent> morningLight();
     static QVector<NoteEvent> odeToJoy();
     static QVector<NoteEvent> scaleRoutine();

@@ -6,6 +6,7 @@
 #include "synthesizer.h"
 
 #include <QElapsedTimer>
+#include <QDate>
 #include <QHash>
 #include <QMainWindow>
 #include <QMap>
@@ -131,6 +132,7 @@ private:
     double m_freePlayEditAdvance = 0.0;
     int m_routineVariation = 0;
     int m_routineStep = -1;
+    QDate m_routinePlanDate;
     int m_earTrainingRound = 0;
     int m_earTrainingSolved = 0;
 
@@ -143,6 +145,7 @@ private:
     QSet<int> m_startedEvents;
     QSet<int> m_endedEvents;
     QSet<int> m_earExpected;
+    QHash<int,int> m_midiOutputNotes;
     QHash<int,double> m_recordStarts;
     QHash<int,double> m_freePlayStarts;
     QHash<int,int> m_freePlayIndexes;
@@ -160,6 +163,7 @@ private:
 
     Synthesizer m_synth;
     MidiInput m_midi;
+    MidiOutput m_midiOutput;
     QTimer m_frameTimer;
     QElapsedTimer m_playClock, m_recordClock, m_freePlayClock, m_metroClock;
     double m_freePlayOffsetBeat = 0.0;
@@ -210,6 +214,7 @@ private:
     QCheckBox *m_bubbles = nullptr;
     QCheckBox *m_metronome = nullptr;
     QCheckBox *m_sound = nullptr;
+    QCheckBox *m_midiOutputCheck = nullptr;
     QSlider *m_volume = nullptr;
     QMediaPlayer *m_sourcePlayer = nullptr;
     QAudioOutput *m_sourceAudioOutput = nullptr;

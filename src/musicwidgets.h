@@ -49,7 +49,7 @@ private:
     double m_groupStart = 0;
     double m_playedBeat = -1;
     double m_followBeat = 0;
-    bool m_showNames = true;
+    bool m_showNames = false;
     bool m_liveWriting = false;
     bool m_editEnabled = false;
     double m_editCursorBeat = -1;

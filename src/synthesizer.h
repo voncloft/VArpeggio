@@ -17,7 +17,7 @@ enum class SynthInstrument {
     SoftPiano
 };
 
-struct tsf;
+struct RecordedPianoLibrary;
 
 class SynthStream : public QIODevice {
     Q_OBJECT
@@ -34,18 +34,12 @@ public:
     void setMuted(bool muted);
     void setVolume(double volume);
     void setInstrument(SynthInstrument instrument);
+    void setOutputSampleRate(int sampleRate);
     qint64 readData(char *data, qint64 maxlen) override;
     qint64 writeData(const char *, qint64) override { return 0; }
+    bool recordedPianoAvailable() const { return bool(m_recordedPiano); }
 
 private:
-    struct SampleVoice {
-        int note;
-        int preset;
-        bool sequenced;
-        unsigned int playIndex;
-        qint64 renderedFrames;
-        double sustainBoostDb;
-    };
     struct Voice {
         int note;
         quint64 id;
@@ -74,6 +68,18 @@ private:
         int velocity;
         quint64 voiceId;
     };
+    struct RecordedVoice {
+        quint64 id;
+        int note;
+        int region;
+        double position;
+        double step;
+        double gain;
+        double attackGain;
+        double releaseGain;
+        bool releasing;
+        bool sequenced;
+    };
     QMutex m_mutex;
     QVector<Voice> m_voices;
     bool m_muted = false;
@@ -98,6 +104,8 @@ private:
     // UI controls must never wait for the audio callback. In particular, a
     // dragged volume handle used to block behind a whole output buffer and
     // looked frozen during dense playback.
+    // Match the initial 115% position shown by the GUI volume slider.  The
+    // mix itself keeps headroom dynamically, so this remains clean.
     std::atomic<double> m_volumeTarget {1.15};
     double m_volumeGain = 1.15;
     int m_sampleRate = 48000;
@@ -105,16 +113,12 @@ private:
     std::array<float,kWaveTableSize+1> m_sineTable{};
     double oscillator(double phase) const;
     void shapePianoStereo(double &left,double &right);
-    int samplePreset(SynthInstrument instrument) const;
-    void startSampleVoice(quint64 id,int note,int velocity,bool sequenced);
-    void stopSampleVoice(quint64 id);
-    void stopSampleVoices(bool sequencedOnly);
-    void prepareSampleSustains(int frames);
+    void startRecordedVoice(quint64 id,int note,int velocity,bool sequenced);
+    void stopRecordedVoice(quint64 id);
+    void stopRecordedVoices(bool sequencedOnly);
     quint64 m_nextVoiceId = 1;
-    tsf *m_soundFont = nullptr;
-    std::array<int,3> m_soundFontPresets {0,1,0};
-    QHash<quint64,SampleVoice> m_sampleVoices;
-    QHash<int,int> m_sampleNoteCounts;
+    std::shared_ptr<const RecordedPianoLibrary> m_recordedPiano;
+    QVector<RecordedVoice> m_recordedVoices;
     QVector<ScheduledEvent> m_sequence;
     qsizetype m_sequenceIndex = 0;
     qint64 m_sequenceFrame = 0;
@@ -142,4 +146,5 @@ public:
 private:
     SynthStream m_stream;
     std::unique_ptr<QAudioSink> m_sink;
+    bool m_recoveringAudio = false;
 };

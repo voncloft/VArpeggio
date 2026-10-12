@@ -11,7 +11,7 @@ Keyflow is a native Qt 6 desktop application for KDE. It connects directly to AL
 - offline polyphonic piano transcription from local audio or a video's sound;
 - detailed visual transcription of falling-note/bubble videos with full, cropped, 53-, 61-, 88-, or other visible keyboard ranges, including chords, changing highlight colors, both staves, binary and triplet timing, MusicXML, and engraved playable PDF output.
 
-**Wait mode does not run a clock or advance by itself.** It advances only after the correct key or complete chord is played. **Listen** is a separate mode that plays without requiring keyboard input. After audio or video transcription, Listen defaults to the generated piano notes represented in Live follow. **Hear original recording (reference only)**, directly under the song title, switches to the untouched source only when explicitly selected; it stays off by default because source audio may contain notes the draft did not capture. The volume slider has a fixed position and controls either playback source without waiting for the GUI playback timer. Score playback and live keys use the bundled GeneralUser GS sampled grand piano through TinySoundFont, with concert, bright-studio, and mellow choices; the older oscillator is retained only as a fallback if the sample bank is unavailable. Sample playback preserves the bank's stereo image, and WAV export uses the piano selected in the GUI.
+**Wait mode does not run a clock or advance by itself.** It advances only after the correct key or complete chord is played. **Listen** is a separate mode that plays without requiring keyboard input. After audio or video transcription, Listen defaults to the generated piano notes represented in Live follow. **Hear original recording (reference only)**, directly under the song title, switches to the untouched source only when explicitly selected; it stays off by default because source audio may contain notes the draft did not capture. The volume slider has a fixed position and controls either playback source without waiting for the GUI playback timer. Score playback and live keys use direct playback of the bundled CC0 FreePats Kawai upright recordings, with natural, bright, and soft velocity-layer choices. No SoundFont synthesizer is used. WAV export uses the same recorded-piano path selected in the GUI.
 
 The BPM value is directly editable from 30–260 as well as adjustable with −/+. Changing it during Listen or Play Along keeps the same musical position and retimes the generated piano, moving live staff, falling notes, keyboard highlights, and metronome as one clock. When **Hear original recording** is selected, the reference playback rate changes too. The Note Flow and Live Coach cards have fixed geometry so note or chord changes cannot resize that row. **Tutorial grand** is the default bright, wide piano profile for imported falling-note songs. Saving **Falling-note video (.mp4)** renders the generated staff notes and that selected piano into a full 88-key tutorial animation; it never hides the original recording inside the export.
 
@@ -36,6 +36,10 @@ cmake --build build -j
 ```
 
 Runtime requirements are Qt 6 Widgets, Multimedia, XML, SVG, PDF/PDF Widgets, ALSA, OpenCV, zlib, Poppler's `pdfdetach`, FFmpeg for media transcription, and Audiveris for optical recognition of plain PDFs. The current project build can use an Audiveris runtime placed beside the executable under `audiveris-runtime/`.
+
+## Open-source components
+
+Keyflow does not intentionally include closed-source or proprietary runtime assets. The bundled Kawai piano recordings are CC0 public domain. Audiveris is an unmodified, separately launched AGPL-3.0 program. Framework and system-tool licenses and source locations are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). GeneralUser GS was removed because its own license disclosed uncertainty about the origin of some contained samples.
 
 ## Keyboard controls
 

@@ -54,11 +54,42 @@ int main(int argc, char **argv) {
     int tempo = 72;
     bool ok = true;
 
+    const QVector<NoteEvent> fourFlatCollection{
+        {60,0,.5,90,Hand::Right},{58,.5,.5,90,Hand::Right},
+        {56,1,.5,90,Hand::Right},{55,1.5,.5,90,Hand::Right},
+        {53,2,.5,90,Hand::Left},{51,2.5,.5,90,Hand::Left},
+        {49,3,.5,90,Hand::Left},{48,3.5,.5,90,Hand::Left}
+    };
+    ok &= check(MusicDocument::inferKeySignature(fourFlatCollection) == -4,
+                "pitch collection becomes a conventional four-flat key signature");
+    const QVector<NoteEvent> threeSharpCollection{
+        {57,0,.5,90,Hand::Right},{59,.5,.5,90,Hand::Right},
+        {61,1,.5,90,Hand::Right},{62,1.5,.5,90,Hand::Right},
+        {64,2,.5,90,Hand::Right},{66,2.5,.5,90,Hand::Right},
+        {68,3,.5,90,Hand::Right}
+    };
+    ok &= check(MusicDocument::inferKeySignature(threeSharpCollection) == 3,
+                "pitch collection becomes a conventional three-sharp key signature");
+    const auto cMajorRoutine=MusicDocument::scaleRoutine();
+    ok &= check(MusicDocument::inferKeySignature(cMajorRoutine) == 0,
+                "C-major practice material keeps an empty key signature");
+    const QSet<int> cMajorPitchClasses{0,2,4,5,7,9,11};
+    bool leftHandIsCMajor=true;
+    for(const auto &note:cMajorRoutine)if(note.hand==Hand::Left&&!cMajorPitchClasses.contains((note.note%12+12)%12))leftHandIsCMajor=false;
+    ok &= check(leftHandIsCMajor,"C-major contrary-motion left hand uses natural C-major notes");
+
     const QString midi = temp.filePath("roundtrip.mid");
     ok &= check(MusicDocument::saveMidi(midi, source, tempo, &error), "write MIDI");
     QVector<NoteEvent> loaded;
     ok &= check(MusicDocument::importFile(midi, loaded, title, tempo, &error), "read MIDI");
     ok &= check(loaded.size() == source.size(), "MIDI preserves note count");
+
+    const QString duplicateMidi=temp.filePath("duplicate-unison.mid");
+    const QVector<NoteEvent> duplicateUnison{{60,0,1,72,Hand::Left},{60,0,1,104,Hand::Right}};
+    ok &= check(MusicDocument::saveMidi(duplicateMidi,duplicateUnison,100,&error),"write duplicate-channel MIDI fixture");
+    loaded.clear();tempo=90;
+    ok &= check(MusicDocument::importFile(duplicateMidi,loaded,title,tempo,&error),"read duplicate-channel MIDI fixture");
+    ok &= check(loaded.size()==1&&loaded.first().velocity==104,"MIDI import merges identical notes duplicated across channels");
 
     const QString xml = temp.filePath("roundtrip.musicxml");
     ok &= check(MusicDocument::saveMusicXml(xml, source, 72, "Chord drill", &error), "write MusicXML");

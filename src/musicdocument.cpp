@@ -39,6 +39,62 @@ bool writeAll(const QString &path, const QByteArray &bytes, QString *error) {
     return true;
 }
 
+int inferKeySignatureImpl(const QVector<NoteEvent> &notes) {
+    if (notes.isEmpty()) return 0;
+
+    std::array<double, 12> pitchWeight{};
+    std::array<bool, 12> present{};
+    double totalWeight = 0.0;
+    int distinctPitches = 0;
+    for (const auto &note : notes) {
+        const int pitch = ((note.note % 12) + 12) % 12;
+        const double weight = qBound(0.25, note.duration, 4.0);
+        pitchWeight[pitch] += weight;
+        totalWeight += weight;
+        if (!present[pitch]) { present[pitch] = true; ++distinctPitches; }
+    }
+    if (distinctPitches < 3 || totalWeight <= 0.0) return 0;
+
+    const auto mod12 = [](int value) { value %= 12; return value < 0 ? value + 12 : value; };
+    constexpr std::array<int, 7> majorIntervals{0, 2, 4, 5, 7, 9, 11};
+    const auto outsideWeight = [&](int fifths) {
+        std::array<bool, 12> inScale{};
+        const int tonic = mod12(7 * fifths);
+        for (int interval : majorIntervals) inScale[mod12(tonic + interval)] = true;
+        double outside = 0.0;
+        for (int pitch = 0; pitch < 12; ++pitch)
+            if (!inScale[pitch]) outside += pitchWeight[pitch];
+        return outside;
+    };
+
+    // First minimize notes that would need an accidental, then prefer the
+    // signature with fewer symbols when two spellings explain the music about
+    // equally well. Relative minor and modal music correctly share the same
+    // signature because they share the same seven-note pitch collection.
+    int bestFifths = 0;
+    double bestOutside = outsideWeight(0);
+    double bestCost = bestOutside + totalWeight * 0.018 * qAbs(bestFifths);
+    for (int fifths = -7; fifths <= 7; ++fifths) {
+        const double outside = outsideWeight(fifths);
+        const double cost = outside + totalWeight * 0.018 * qAbs(fifths);
+        if (cost < bestCost - 1e-9 ||
+            (qAbs(cost - bestCost) <= 1e-9 && qAbs(fifths) < qAbs(bestFifths))) {
+            bestCost = cost;
+            bestOutside = outside;
+            bestFifths = fifths;
+        }
+    }
+
+    // Do not invent a key signature for noisy/chromatic material. A signature
+    // must explain nearly all of the duration-weighted notes and improve on C
+    // major by a useful amount.
+    const double cOutside = outsideWeight(0);
+    if (bestFifths != 0 &&
+        (bestOutside / totalWeight > 0.12 || cOutside - bestOutside < totalWeight * 0.06))
+        return 0;
+    return bestFifths;
+}
+
 quint16 zipLe16(const uchar *p) { return quint16(p[0])|(quint16(p[1])<<8); }
 quint32 zipLe32(const uchar *p) { return quint32(p[0])|(quint32(p[1])<<8)|(quint32(p[2])<<16)|(quint32(p[3])<<24); }
 
@@ -548,6 +604,10 @@ void applySourceDynamics(QVector<NoteEvent> &notes,int tempo,const DecodedAudio 
 }
 }
 
+int MusicDocument::inferKeySignature(const QVector<NoteEvent> &notes) {
+    return inferKeySignatureImpl(notes);
+}
+
 QString MusicDocument::noteName(int midi, bool withOctave) {
     const int normalized = ((midi % 12) + 12) % 12;
     return QString::fromLatin1(kNames[normalized]) + (withOctave ? QString::number(midi / 12 - 1) : QString());
@@ -576,10 +636,14 @@ QVector<NoteEvent> MusicDocument::odeToJoy() {
 
 QVector<NoteEvent> MusicDocument::scaleRoutine() {
     QVector<NoteEvent> n;
-    const int scale[] = {0,2,4,5,7,9,11,12,11,9,7,5,4,2,0};
+    const int rightScale[] = {0,2,4,5,7,9,11,12,11,9,7,5,4,2,0};
+    // Contrary motion in C major does not mirror the semitone distances.
+    // The left hand descends C-B-A-G-F-E-D-C, staying on the same natural
+    // pitch collection as the ascending right hand.
+    const int leftScale[] = {0,-1,-3,-5,-7,-8,-10,-12,-10,-8,-7,-5,-3,-1,0};
     for (int i=0;i<15;++i) {
-        n << NoteEvent{60+scale[i], i*.5, .42, 88, Hand::Right};
-        n << NoteEvent{48-scale[i], i*.5, .42, 76, Hand::Left};
+        n << NoteEvent{60+rightScale[i], i*.5, .42, 88, Hand::Right};
+        n << NoteEvent{48+leftScale[i], i*.5, .42, 76, Hand::Left};
     }
     return sortNotes(n);
 }
@@ -645,7 +709,17 @@ bool MusicDocument::importMidi(const QByteArray &data, QVector<NoteEvent> &notes
         pos=end;
     }
     tempo=qBound(30, int(qRound(60000000.0/firstTempo)), 300);
-    for(const auto &r:raw) if(r.end>r.start) notes<<NoteEvent{r.note,double(r.start)/division,qMax(.05,double(r.end-r.start)/division),r.vel,r.note<60?Hand::Left:Hand::Right};
+    // Some downloadable piano MIDIs duplicate the same performance across
+    // several channels. A piano key cannot sound as four independent unisons;
+    // importing every copy makes attacks clip and engraves four stacked notes.
+    // Merge only genuinely coincident copies, retaining the strongest velocity.
+    std::sort(raw.begin(),raw.end(),[](const Raw &a,const Raw &b){if(a.start!=b.start)return a.start<b.start;if(a.note!=b.note)return a.note<b.note;return a.end<b.end;});
+    QVector<Raw> unique;
+    for(const auto &event:raw){
+        if(!unique.isEmpty()&&unique.last().note==event.note&&qAbs(unique.last().start-event.start)<=2&&qAbs(unique.last().end-event.end)<=2)unique.last().vel=qMax(unique.last().vel,event.vel);
+        else unique.append(event);
+    }
+    for(const auto &r:unique) if(r.end>r.start) notes<<NoteEvent{r.note,double(r.start)/division,qMax(.05,double(r.end-r.start)/division),r.vel,r.note<60?Hand::Left:Hand::Right};
     if(notes.isEmpty()) { setError(error,"No playable notes were found in this MIDI file."); return false; }
     return true;
 }

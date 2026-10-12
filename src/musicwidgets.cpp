@@ -22,11 +22,26 @@ double nextMeasureBoundary(QVector<TimeSignatureEvent> signatures,double beat){
     if(nextChange<boundary)boundary=nextChange;return boundary;
 }
 int staffDiatonicIndex(int midi,int fifths,AccidentalMark accidental){static const int sharpStep[]={0,0,1,1,2,3,3,4,4,5,5,6};static const int flatStep[]={0,1,1,2,2,3,4,4,5,5,6,6};const int pitch=((midi%12)+12)%12;const bool useFlats=accidental==AccidentalMark::Flat||(accidental!=AccidentalMark::Sharp&&fifths<0);return (midi/12-1)*7+(useFlats?flatStep[pitch]:sharpStep[pitch]);}
-QString staffPitchName(int midi,int fifths,AccidentalMark accidental){static const char*sharpNames[]={"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};static const char*flatNames[]={"C","Db","D","Eb","E","F","Gb","G","Ab","A","Bb","B"};const bool useFlats=accidental==AccidentalMark::Flat||(accidental!=AccidentalMark::Sharp&&fifths<0);return QString::fromLatin1((useFlats?flatNames:sharpNames)[((midi%12)+12)%12]);}
+QString staffPitchName(int midi,int fifths,AccidentalMark accidental){static const char*sharpNames[]={"C","C♯","D","D♯","E","F","F♯","G","G♯","A","A♯","B"};static const char*flatNames[]={"C","D♭","D","E♭","E","F","G♭","G","A♭","A","B♭","B"};const bool useFlats=accidental==AccidentalMark::Flat||(accidental!=AccidentalMark::Sharp&&fifths<0);return QString::fromUtf8((useFlats?flatNames:sharpNames)[((midi%12)+12)%12])+QString::number(midi/12-1);}
+AccidentalMark automaticAccidental(int midi,int fifths){
+    const int pitch=((midi%12)+12)%12;
+    const QVector<int> sharpNaturals{5,0,7,2,9,4,11},flatNaturals{11,4,9,2,7,0,5};
+    const auto &alteredNaturals=fifths>=0?sharpNaturals:flatNaturals;
+    for(int index=0;index<qMin(7,qAbs(fifths));++index){
+        const int natural=alteredNaturals[index];
+        const int altered=(natural+(fifths>=0?1:-1)+12)%12;
+        if(pitch==altered)return AccidentalMark::Automatic; // already supplied by the key signature
+        if(pitch==natural)return AccidentalMark::Natural;   // cancel the active key signature
+    }
+    // A black-key pitch outside the key signature still needs a written
+    // accidental. Prefer flats in a flat key and sharps everywhere else.
+    if(blackKey(midi))return fifths<0?AccidentalMark::Flat:AccidentalMark::Sharp;
+    return AccidentalMark::Automatic;
+}
 bool included(const NoteEvent &n,int filter){return filter<0||(filter==0&&n.hand==Hand::Left)||(filter==1&&n.hand==Hand::Right);}
 }
 
-ScoreWidget::ScoreWidget(QWidget *parent):QWidget(parent){setMinimumHeight(300);setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Expanding);}
+ScoreWidget::ScoreWidget(QWidget *parent):QWidget(parent){setMinimumHeight(390);setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Expanding);}
 void ScoreWidget::setNotes(const QVector<NoteEvent>&n){m_notes=n;update();}
 void ScoreWidget::setExpected(const QSet<int>&n,double start){m_expected=n;m_groupStart=start;update();}
 void ScoreWidget::setPlayedBeat(double b){m_playedBeat=b;update();}
@@ -44,7 +59,9 @@ void ScoreWidget::paintEvent(QPaintEvent*){QPainter p(this);paintScore(p,rect())
 
 QPair<double,double> ScoreWidget::viewRange() const {
     double maxBeat=0;for(const auto &note:m_notes)if(included(note,m_handFilter))maxBeat=qMax(maxBeat,note.start+note.duration);for(const auto &rest:m_rests)if(m_handFilter<0||(m_handFilter==0&&rest.hand==Hand::Left)||(m_handFilter==1&&rest.hand==Hand::Right))maxBeat=qMax(maxBeat,rest.beat+rest.duration);for(const auto &signature:m_timeSignatures)maxBeat=qMax(maxBeat,signature.beat);for(const auto &signature:m_keySignatures)maxBeat=qMax(maxBeat,signature.beat);for(double beat:m_repeatEnds)maxBeat=qMax(maxBeat,beat);
-    const double window=m_liveWriting?12.0:qMax(8.0,qMin(16.0,std::ceil((maxBeat+1)/4.0)*4.0));
+    // Keep the live notation comfortably readable. Twelve beats is the widest
+    // view; Free Play stays tighter so newly played notes do not become tiny.
+    const double window=m_liveWriting?10.0:qMax(8.0,qMin(12.0,std::ceil((maxBeat+1)/4.0)*4.0));
     const double followed=m_liveWriting?qMax(0.0,m_followBeat):qBound(0.0,m_followBeat,maxBeat);
     double startBeat=0;
     if(m_liveWriting){startBeat=qMax(0.0,followed-window*.68);startBeat=std::floor(startBeat*8.0)/8.0;}
@@ -182,6 +199,26 @@ void ScoreWidget::paintScore(QPainter &p,const QRectF &target) const {
         if(qAbs(a->start-b->start)>.001)return a->start<b->start;
         return a->note<b->note;
     });
+    // A performed MIDI glissando can contain a dozen attacks only a few
+    // milliseconds apart. At a normal score zoom those positions are less
+    // than a notehead apart, so individual stems become an unreadable wedge.
+    // Keep playback events untouched, but engrave a monotonic ultra-fast run
+    // as its two endpoint notes joined by a conventional glissando line.
+    QVector<QPair<const NoteEvent*,const NoteEvent*>> glissandi;
+    QSet<const NoteEvent*> hiddenGlissNotes;
+    for(int first=0;first+5<ordered.size();){
+        const NoteEvent *a=ordered[first],*b=ordered[first+1];
+        const int initialStep=b->note-a->note;const int direction=initialStep>0?1:initialStep<0?-1:0;
+        if(direction==0||a->hand!=b->hand||b->start-a->start>.09||a->duration>.14||b->duration>.14){++first;continue;}
+        int last=first+1;
+        while(last+1<ordered.size()){
+            const NoteEvent *previous=ordered[last],*next=ordered[last+1];const int step=next->note-previous->note;
+            if(next->hand!=a->hand||next->start-previous->start>.09||next->start<=previous->start+.001||next->duration>.14||step*direction<=0||qAbs(step)>4)break;
+            ++last;
+        }
+        if(last-first+1>=6){glissandi.append(qMakePair(ordered[first],ordered[last]));for(int index=first+1;index<last;++index)hiddenGlissNotes.insert(ordered[index]);first=last+1;}else ++first;
+    }
+    if(!hiddenGlissNotes.isEmpty())ordered.erase(std::remove_if(ordered.begin(),ordered.end(),[&](const NoteEvent *note){return hiddenGlissNotes.contains(note);}),ordered.end());
     QVector<RenderChord> chords;
     constexpr double chordTolerance=.04;
     const int c4=diatonicIndex(60);
@@ -295,6 +332,17 @@ void ScoreWidget::paintScore(QPainter &p,const QRectF &target) const {
             for(double ly=ledger;(step>0?ly<=y:ly>=y);ly+=step)p.drawLine(QPointF(x-10,ly),QPointF(x+10,ly));
         }
     }
+    // Join the retained endpoints of condensed MIDI flourishes. The short
+    // wavy stroke communicates every intermediate pitch without overlapping
+    // noteheads and stems at an impossible horizontal scale.
+    for(const auto &run:glissandi){
+        const NoteEvent *first=run.first,*last=run.second;
+        const double x1=musicLeft+(first->start-startBeat)*scale,x2=musicLeft+(last->start-startBeat)*scale;
+        const int firstIndex=staffDiatonicIndex(first->note,fifthsAt(m_keySignatures,first->start),first->accidental),lastIndex=staffDiatonicIndex(last->note,fifthsAt(m_keySignatures,last->start),last->accidental);
+        const double y1=(first->hand==Hand::Left?150-(firstIndex-c4)*5:120-(firstIndex-c4)*5)+verticalOffset,y2=(last->hand==Hand::Left?150-(lastIndex-c4)*5:120-(lastIndex-c4)*5)+verticalOffset;
+        QPainterPath wave;const double left=x1+8,right=x2-8;wave.moveTo(left,y1);const int segments=qMax(3,int((right-left)/5.0));for(int segment=1;segment<=segments;++segment){const double amount=double(segment)/segments;wave.lineTo(left+(right-left)*amount,y1+(y2-y1)*amount+(segment%2?2.2:-2.2));}
+        p.setBrush(Qt::NoBrush);p.setPen(QPen(noteColor(*first),1.4,Qt::SolidLine,Qt::RoundCap,Qt::RoundJoin));p.drawPath(wave);
+    }
     // One stem per chord; flags are used only when that chord is not beamed.
     for(const auto &chord:chords){
         if(chord.stemBaseY==0&&chord.stemEndY==0)continue;
@@ -386,13 +434,23 @@ void ScoreWidget::paintScore(QPainter &p,const QRectF &target) const {
     for(const auto &chord:chords)for(const auto &render:chord.notes){
         const auto &note=*render.event;const double x=render.headX,y=render.y;const QColor color=render.color;
         AccidentalMark accidental=note.accidental;
-        if(accidental==AccidentalMark::Automatic){int fifths=0;for(const auto &key:m_keySignatures){if(key.beat>note.start+.001)break;fifths=key.fifths;}const QVector<int> sharpNaturals{5,0,7,2,9,4,11},flatNaturals{11,4,9,2,7,0,5};const auto &naturals=fifths>0?sharpNaturals:flatNaturals;for(int index=0;index<qMin(7,qAbs(fifths));++index)if(note.note%12==naturals[index]){accidental=AccidentalMark::Natural;break;}}
+        if(accidental==AccidentalMark::Automatic)accidental=automaticAccidental(note.note,fifthsAt(m_keySignatures,note.start));
         if(accidental!=AccidentalMark::Automatic){const QString symbol=accidental==AccidentalMark::Natural?QString::fromUtf8("♮"):accidental==AccidentalMark::Sharp?QString::fromUtf8("♯"):QString::fromUtf8("♭");p.setPen(color);p.setFont(QFont("Noto Music",15));p.drawText(QRectF(x-24,y-13,14,26),Qt::AlignCenter,symbol);}
         const bool openHead=note.duration>=1.75;
         p.save();p.translate(x,y);p.rotate(-18);p.setPen(openHead?QPen(color,1.8):Qt::NoPen);p.setBrush(openHead?QColor("#fffefa"):color);p.drawEllipse(QRectF(-7,-4.5,14,9));p.restore();
-        const bool dotted=qAbs(note.duration-.375)<.045||qAbs(note.duration-.75)<.07||qAbs(note.duration-1.5)<.1||qAbs(note.duration-3.0)<.15;
+        // Playback uses a small release gap (for example, a written quarter
+        // is held for about .82 beats).  Do not turn that articulation into
+        // an augmentation dot; dots are reserved for durations that were
+        // actually quantized close to a dotted written value.
+        const bool dotted=qAbs(note.duration-.375)<.025||qAbs(note.duration-.75)<.035||qAbs(note.duration-1.5)<.06||qAbs(note.duration-3.0)<.10;
         if(dotted){p.setPen(Qt::NoPen);p.setBrush(color);p.drawEllipse(QPointF(x+11,y),1.8,1.8);}
-        if(m_showNames){p.setPen(openHead?color:Qt::white);p.setFont(QFont("Manrope",6,QFont::Bold));p.drawText(QRectF(x-8,y-5,16,10),Qt::AlignCenter,staffPitchName(note.note,fifthsAt(m_keySignatures,note.start),note.accidental));}
+        if(m_showNames){
+            const QString name=staffPitchName(note.note,fifthsAt(m_keySignatures,note.start),note.accidental);
+            const double labelWidth=qMax(26.0,8.0+name.size()*6.0);const bool placeLeft=x+11+labelWidth>musicRight;
+            const QRectF label(placeLeft?x-11-labelWidth:x+11,y-8,labelWidth,16);
+            p.setPen(QPen(QColor(color),.8));p.setBrush(QColor(255,254,250,235));p.drawRoundedRect(label,4,4);
+            p.setPen(color);p.setFont(QFont("Manrope",8,QFont::Bold));p.drawText(label,Qt::AlignCenter,name);
+        }
     }
     p.restore();
 }
