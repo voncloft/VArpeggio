@@ -3,6 +3,7 @@
 #include <alsa/asoundlib.h>
 #include <QSet>
 #include <QVector>
+#include <poll.h>
 
 namespace {
 struct RawDevice {
@@ -54,6 +55,58 @@ int midiDataBytes(quint8 status){
 }
 
 QVector<RawDevice> rawMidiInputs(){return rawMidiDevices(SND_RAWMIDI_STREAM_INPUT);}
+
+void waitRawWritable(snd_rawmidi_t *handle,int timeoutMs){
+    const int count=snd_rawmidi_poll_descriptors_count(handle);
+    if(count<=0)return;
+    QVector<pollfd> descriptors(count);
+    if(snd_rawmidi_poll_descriptors(handle,descriptors.data(),count)<0)return;
+    ::poll(descriptors.data(),nfds_t(count),timeoutMs);
+}
+
+bool writeRawMessage(snd_rawmidi_t *handle,const quint8 *message,int length,int retries=8){
+    if(!handle)return false;
+    int offset=0,attempt=0;
+    while(offset<length&&attempt<retries){
+        const int written=snd_rawmidi_write(handle,message+offset,length-offset);
+        if(written>0){offset+=written;continue;}
+        if(written!=-EAGAIN)return false;
+        ++attempt;
+        waitRawWritable(handle,10);
+    }
+    return offset==length;
+}
+
+void drainRawOutput(snd_rawmidi_t *handle){
+    if(!handle)return;
+    // A full 128-key panic is about 130 ms on a 31.25 kbit/s DIN link.
+    // Leave enough bounded time for the final bytes to physically exit even
+    // through an inexpensive USB-to-MIDI adapter.
+    for(int attempt=0;attempt<30;++attempt){
+        const int result=snd_rawmidi_drain(handle);
+        if(result>=0)return;
+        if(result!=-EAGAIN)return;
+        waitRawWritable(handle,10);
+    }
+}
+
+void silenceRawOutput(snd_rawmidi_t *handle){
+    if(!handle)return;
+    // VArpeggio transmits on MIDI channel 1.  Organ and reed patches make a
+    // dropped note-off especially obvious, so do not rely on CC 123 alone:
+    // release every controller and every possible key as well.
+    const quint8 controls[][3]={{0xb0,64,0},   // sustain off
+                                {0xb0,66,0},   // sostenuto off
+                                {0xb0,120,0},  // all sound off (immediate)
+                                {0xb0,121,0},  // reset controllers
+                                {0xb0,123,0}}; // all notes off
+    for(const auto &message:controls)writeRawMessage(handle,message,3,16);
+    for(int note=0;note<128;++note){
+        const quint8 noteOff[]{0x80,quint8(note),0};
+        writeRawMessage(handle,noteOff,3,16);
+    }
+    drainRawOutput(handle);
+}
 }
 
 MidiInput::MidiInput(QObject *parent) : QThread(parent) {}
@@ -144,22 +197,21 @@ bool MidiOutput::openFirst(QString *error){
 void MidiOutput::close(){
     QMutexLocker lock(&m_mutex);
     if(!m_handle)return;
-    const quint8 sustainOff[]{0xb0,64,0};const quint8 allOff[]{0xb0,123,0};
-    snd_rawmidi_write(m_handle,sustainOff,3);snd_rawmidi_write(m_handle,allOff,3);
-    snd_rawmidi_drop(m_handle);snd_rawmidi_close(m_handle);m_handle=nullptr;m_device.clear();
+    silenceRawOutput(m_handle);
+    snd_rawmidi_close(m_handle);m_handle=nullptr;m_device.clear();
 }
 
 void MidiOutput::sendMessage(quint8 status,quint8 data1,quint8 data2,int length){
     QMutexLocker lock(&m_mutex);if(!m_handle)return;
     const quint8 message[]{status,data1,data2};
-    // Three-byte channel messages fit atomically in the ALSA raw-MIDI buffer.
-    // In nonblocking mode EAGAIN simply drops this one message rather than
-    // ever freezing the UI/audio clock while a cable is being unplugged.
-    snd_rawmidi_write(m_handle,message,length);
+    // Raw MIDI is opened nonblocking so a disconnected cable cannot freeze
+    // the UI. Brief bounded retries prevent a momentarily full adapter buffer
+    // from dropping a note-off and leaving a hardware voice stuck on.
+    writeRawMessage(m_handle,message,length);
 }
 void MidiOutput::noteOn(int note,int velocity){sendMessage(0x90,quint8(qBound(0,note,127)),quint8(qBound(1,velocity,127)));}
 void MidiOutput::noteOff(int note){sendMessage(0x80,quint8(qBound(0,note,127)),0);}
 void MidiOutput::sustain(bool down){sendMessage(0xb0,64,down?127:0);}
 void MidiOutput::programChange(int program){sendMessage(0xc0,quint8(qBound(0,program,127)),0,2);}
 void MidiOutput::channelVolume(int value){sendMessage(0xb0,7,quint8(qBound(0,value,127)));}
-void MidiOutput::allNotesOff(){sendMessage(0xb0,64,0);sendMessage(0xb0,123,0);}
+void MidiOutput::allNotesOff(){QMutexLocker lock(&m_mutex);silenceRawOutput(m_handle);}

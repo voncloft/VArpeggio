@@ -68,7 +68,7 @@
 #include <limits>
 
 #ifndef VARPEGGIO_VERSION
-#define VARPEGGIO_VERSION "0.2.0"
+#define VARPEGGIO_VERSION "0.2.1"
 #endif
 
 namespace {

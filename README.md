@@ -88,6 +88,10 @@ Soundtrack-only polyphonic transcription remains experimental. Clean solo piano 
 
 ## Changelog
 
+### 0.2.1 — 2026-10-13
+
+- Fixed physical MIDI keyboards leaving an organ/reed voice humming after Stop. Hardware shutdown now reliably releases pedals and every key, sends all-sound-off and controller-reset messages, and drains the adapter before closing it.
+
 ### 0.2.0 — 2026-10-13
 
 - Made Wait mode duration-aware: the score and falling notes advance only while the complete written note or chord is held.
