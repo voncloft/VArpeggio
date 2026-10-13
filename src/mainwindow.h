@@ -97,6 +97,7 @@ private:
     void refreshFreePlayStaff();
     void editFreePlayStaff();
     void updateFreePlayHistory(bool followLatest);
+    void updateScoreHistory(double liveBeat, bool forceFollow = false);
     void syncFreePlayScore();
     void setFreePlayGrouping(bool grouped, double beat = -1.0);
 
@@ -110,6 +111,7 @@ private:
     void openRoutineDialog();
     void loadRoutineStep(int step);
     void finishRoutinePlan();
+    void restartCompletedPracticePass();
     void startEarTrainingRound();
     void playEarTrainingPrompt();
     void showNotice(const QString &text, bool warning = false);
@@ -128,12 +130,15 @@ private:
     bool m_earTraining = false;
     bool m_freePlayApplied = false;
     bool m_freePlayAutoFollow = true;
+    bool m_scoreAutoFollow = true;
+    double m_scoreLiveBeat = 0.0;
     bool m_freePlayGroupEntry = false;
     double m_freePlayEditBeat = -1.0;
     double m_freePlayEditAdvance = 0.0;
     int m_routineVariation = 0;
     int m_routineStep = -1;
     QDate m_routinePlanDate;
+    QSet<int> m_routineCompletedSteps;
     int m_earTrainingRound = 0;
     int m_earTrainingSolved = 0;
 
@@ -168,6 +173,9 @@ private:
     MidiOutput m_midiOutput;
     QTimer m_frameTimer;
     QElapsedTimer m_playClock, m_recordClock, m_freePlayClock, m_metroClock;
+    QElapsedTimer m_waitAdvanceClock;
+    double m_waitBeat = 0.0;
+    qint64 m_lastWaitAdvanceMs = 0;
     double m_freePlayOffsetBeat = 0.0;
     double m_playbackOffsetSeconds = 0.0;
     int m_lastMetroBeat = -1;

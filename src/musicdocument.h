@@ -65,6 +65,11 @@ struct TranscriptionInfo {
 class MusicDocument {
 public:
     static QString noteName(int midi, bool withOctave = true);
+    // Spell an enharmonic pitch for the written key. Flat keys use flat note
+    // names (for example MIDI 56 is A-flat, not G-sharp, in E-flat major).
+    static QString spelledNoteName(int midi, int fifths,
+                                   AccidentalMark accidental = AccidentalMark::Automatic,
+                                   bool withOctave = true);
     // Infer the conventional key signature that best explains the pitch
     // collection. Positive values are sharps, negative values are flats.
     static int inferKeySignature(const QVector<NoteEvent> &notes);

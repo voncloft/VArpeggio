@@ -27,6 +27,8 @@ public:
     void setHandFilter(int filter);
     void paintScore(QPainter &p, const QRectF &target) const;
     const QVector<NoteEvent> &notes() const { return m_notes; }
+    QString noteNameForBeat(int midi, double beat,
+                            AccidentalMark accidental = AccidentalMark::Automatic) const;
 
 signals:
     void editCursorChanged(double beat);
@@ -36,12 +38,14 @@ signals:
     void staffContextRequested(double beat, const QPoint &globalPosition);
     void seekPreviewChanged(double beat);
     void seekRequested(double beat);
+    void historyStepRequested(int steps);
 
 protected:
     void paintEvent(QPaintEvent *) override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
+    void wheelEvent(QWheelEvent *event) override;
 
 private:
     QPair<double,double> viewRange() const;
@@ -103,6 +107,7 @@ public:
     void setWaitMode(bool waiting);
     void setHandFilter(int filter);
     void pulseNote(int note);
+    void resetState();
 
 protected:
     void paintEvent(QPaintEvent *) override;

@@ -54,6 +54,11 @@ int main(int argc, char **argv) {
     int tempo = 72;
     bool ok = true;
 
+    ok &= check(MusicDocument::spelledNoteName(56, -3) == QString::fromUtf8("A♭3"),
+                "flat key spells MIDI 56 as A-flat rather than G-sharp");
+    ok &= check(MusicDocument::spelledNoteName(56, 3) == QString::fromUtf8("G♯3"),
+                "sharp key spells MIDI 56 as G-sharp");
+
     const QVector<NoteEvent> fourFlatCollection{
         {60,0,.5,90,Hand::Right},{58,.5,.5,90,Hand::Right},
         {56,1,.5,90,Hand::Right},{55,1.5,.5,90,Hand::Right},

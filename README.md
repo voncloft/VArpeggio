@@ -4,7 +4,7 @@ VArpeggio is a native Qt 6 piano practice, performance, recording, and notation 
 
 ## Main features
 
-- **Wait mode:** playback advances only after the correct key or complete chord is played.
+- **Wait mode:** playback advances only while the correct key or complete chord is held for the written duration; repeated notes require a fresh key press unless they are tied.
 - **Listen:** plays the generated notes represented on the live staff without requiring keyboard input.
 - **Play Along:** follows the score clock while showing the current notes, keyboard keys, and falling-note display.
 - **Free Play:** immediately displays played notes on the grand staff, full 88-key keyboard, and optional falling-note view. Recording is optional.
@@ -80,10 +80,26 @@ Soundtrack-only polyphonic transcription remains experimental. Clean solo piano 
 - The BPM control accepts 30–260 BPM and can be changed while Listen or Play Along is active.
 - Changing BPM retimes generated piano playback, live staff, falling notes, keyboard highlights, and metronome from the same musical position.
 - The orange play line can be dragged to seek in Wait, Listen, and Play Along modes.
+- The Earlier–Latest history bar and mouse wheel can review completed measures while playback continues; moving back to Latest restores live follow.
 - Playback supports pause, resume, and stop.
 - Live follow advances by measures and keeps the current measure readable instead of shrinking the entire piece onto one line.
 - Long notes remain visible as ties and held-note indicators for their complete sounding duration.
 - Right, Left, and Together filters support separate-hand practice.
+
+## Changelog
+
+### 0.2.0 — 2026-10-13
+
+- Made Wait mode duration-aware: the score and falling notes advance only while the complete written note or chord is held.
+- Made consecutive repeated pitches require release and a new attack, while genuine ties remain continuous held notes.
+- Kept Play Along tempo-driven without allowing a quick key touch to skip the expected group, and reset its scoring for each written attack.
+- Added measure-history review to Wait, Listen, and Play Along. Drag the Earlier–Latest bar or use the mouse wheel over the grand staff; playback continues until the user explicitly pauses it.
+- Added looping practice passes, pause/resume, draggable seeking, system-font-aware interface sizing, a scrollable sidebar, and a larger readable Live Coach panel.
+- Improved grand-staff paging, 88-key ledger-note visibility, key signatures, ties, falling-note timing, MIDI hardware playback, and recorded-piano audio stability.
+
+### 0.1.0
+
+- Initial VArpeggio development release.
 
 ## Build
 

@@ -2,6 +2,7 @@
 
 #include <QMouseEvent>
 #include <QPainter>
+#include <QWheelEvent>
 #include <QPainterPath>
 #include <QtMath>
 #include <algorithm>
@@ -36,7 +37,7 @@ QPair<double,double> measureAt(QVector<TimeSignatureEvent> signatures,double bea
     return {active.beat+std::floor((local+1e-6)/length)*length,length};
 }
 int staffDiatonicIndex(int midi,int fifths,AccidentalMark accidental){static const int sharpStep[]={0,0,1,1,2,3,3,4,4,5,5,6};static const int flatStep[]={0,1,1,2,2,3,4,4,5,5,6,6};const int pitch=((midi%12)+12)%12;const bool useFlats=accidental==AccidentalMark::Flat||(accidental!=AccidentalMark::Sharp&&fifths<0);return (midi/12-1)*7+(useFlats?flatStep[pitch]:sharpStep[pitch]);}
-QString staffPitchName(int midi,int fifths,AccidentalMark accidental){static const char*sharpNames[]={"C","C♯","D","D♯","E","F","F♯","G","G♯","A","A♯","B"};static const char*flatNames[]={"C","D♭","D","E♭","E","F","G♭","G","A♭","A","B♭","B"};const bool useFlats=accidental==AccidentalMark::Flat||(accidental!=AccidentalMark::Sharp&&fifths<0);return QString::fromUtf8((useFlats?flatNames:sharpNames)[((midi%12)+12)%12])+QString::number(midi/12-1);}
+QString staffPitchName(int midi,int fifths,AccidentalMark accidental){return MusicDocument::spelledNoteName(midi,fifths,accidental);}
 AccidentalMark automaticAccidental(int midi,int fifths){
     const int pitch=((midi%12)+12)%12;
     const QVector<int> sharpNaturals{5,0,7,2,9,4,11},flatNaturals{11,4,9,2,7,0,5};
@@ -66,6 +67,7 @@ void ScoreWidget::setSeekEnabled(bool enabled){m_seekEnabled=enabled;m_seekDragg
 void ScoreWidget::setEditCursorBeat(double beat){m_editCursorBeat=beat;update();}
 void ScoreWidget::setTimeSignatures(const QVector<TimeSignatureEvent>&signatures){m_timeSignatures=signatures;std::sort(m_timeSignatures.begin(),m_timeSignatures.end(),[](const auto&a,const auto&b){return a.beat<b.beat;});update();}
 void ScoreWidget::setKeySignatures(const QVector<KeySignatureEvent>&signatures){m_keySignatures=signatures;std::sort(m_keySignatures.begin(),m_keySignatures.end(),[](const auto&a,const auto&b){return a.beat<b.beat;});update();}
+QString ScoreWidget::noteNameForBeat(int midi,double beat,AccidentalMark accidental)const{return MusicDocument::spelledNoteName(midi,fifthsAt(m_keySignatures,beat),accidental);}
 void ScoreWidget::setRests(const QVector<StaffRestEvent>&rests){m_rests=rests;std::sort(m_rests.begin(),m_rests.end(),[](const auto&a,const auto&b){return a.beat<b.beat;});update();}
 void ScoreWidget::setRepeatEnds(const QVector<double>&beats){m_repeatEnds=beats;std::sort(m_repeatEnds.begin(),m_repeatEnds.end());update();}
 void ScoreWidget::setShowNames(bool s){m_showNames=s;update();}
@@ -575,6 +577,14 @@ void ScoreWidget::mouseReleaseEvent(QMouseEvent *event){
     const double beat=m_seekPreviewBeat;m_seekDragging=false;m_seekPreviewBeat=-1;update();emit seekRequested(beat);event->accept();
 }
 
+void ScoreWidget::wheelEvent(QWheelEvent *event){
+    if(!m_editEnabled&&m_seekEnabled){
+        const int delta=event->angleDelta().x()!=0?event->angleDelta().x():event->angleDelta().y();
+        if(delta!=0){emit historyStepRequested(delta>0?-1:1);event->accept();return;}
+    }
+    QWidget::wheelEvent(event);
+}
+
 PianoWidget::PianoWidget(QWidget *parent):QWidget(parent){setMinimumHeight(130);setMouseTracking(true);setFocusPolicy(Qt::StrongFocus);}
 QRectF PianoWidget::noteRect(int note) const {int whites=0,total=0;for(int n=m_low;n<=m_high;++n)if(!blackKey(n))++total;double ww=width()/double(total);for(int n=m_low;n<=note;++n)if(!blackKey(n))++whites;if(blackKey(note))return QRectF((whites-.34)*ww,0,ww*.68,height()*.62);return QRectF((whites-1)*ww,0,ww,height());}
 int PianoWidget::noteAt(const QPointF&p)const{for(int n=m_low;n<=m_high;++n)if(blackKey(n)&&noteRect(n).contains(p))return n;for(int n=m_low;n<=m_high;++n)if(!blackKey(n)&&noteRect(n).contains(p))return n;return-1;}
@@ -587,7 +597,8 @@ void PianoWidget::leaveEvent(QEvent*){if(m_mouseNote>=0){emit noteReleased(m_mou
 
 BubbleWidget::BubbleWidget(QWidget *parent):QWidget(parent){setMinimumHeight(185);m_clock.start();m_timer.setInterval(16);connect(&m_timer,&QTimer::timeout,this,qOverload<>(&QWidget::update));m_timer.start();}
 void BubbleWidget::setNotes(const QVector<NoteEvent>&n){m_notes=n;update();}void BubbleWidget::setPlayhead(double b){m_playhead=b;update();}void BubbleWidget::setExpected(const QSet<int>&n,double s){m_expected=n;m_groupStart=s;update();}void BubbleWidget::setBubblesVisible(bool v){m_showBubbles=v;update();}void BubbleWidget::setWaitMode(bool waiting){m_waitMode=waiting;update();}void BubbleWidget::setHandFilter(int f){m_handFilter=f;update();}void BubbleWidget::pulseNote(int n){m_pulses<<Pulse{n,m_clock.elapsed()};update();}
+void BubbleWidget::resetState(){m_pulses.clear();m_expected.clear();m_playhead=0;m_groupStart=0;update();}
 void BubbleWidget::paintEvent(QPaintEvent*){QPainter p(this);p.setRenderHint(QPainter::Antialiasing);QLinearGradient bg(0,0,0,height());bg.setColorAt(0,QColor("#17342e"));bg.setColorAt(1,QColor("#102721"));p.fillRect(rect(),bg);int low=21,high=108;auto xFor=[&](int n){return (n-low+.5)*width()/double(high-low+1);};p.setPen(QPen(QColor(255,255,255,12),1));for(int n=low;n<=high;++n)if(n%12==0)p.drawLine(QPointF(xFor(n),0),QPointF(xFor(n),height()));double strike=height()-23;p.setPen(QPen(QColor("#66c4ae"),1));p.drawLine(QPointF(0,strike),QPointF(width(),strike));
-    if(m_showBubbles){for(const auto&n:m_notes){if(!included(n,m_handFilter))continue;double reference=m_waitMode?m_groupStart:m_playhead;constexpr double pixelsPerBeat=42.0;double y=strike-(n.start-reference)*pixelsPerBeat;double w=qMax(12.0,width()/92.0),h=qMax(15.0,n.duration*pixelsPerBeat);if(y<-40||y-h>height()+30)continue;bool ex=m_waitMode&&qAbs(n.start-m_groupStart)<.01&&m_expected.contains(n.note);QColor c=ex?QColor("#ef775f"):QColor(n.hand==Hand::Left?"#86aebd":"#77cbb8");QRectF r(xFor(n.note)-w/2,y-h,w,h);p.setPen(Qt::NoPen);p.setBrush(c);p.drawRoundedRect(r,w/2,w/2);if(ex){p.setBrush(QColor(239,119,95,38));p.drawEllipse(QPointF(xFor(n.note),strike),15,15);}}}
+    if(m_showBubbles){for(const auto&n:m_notes){if(!included(n,m_handFilter))continue;double reference=m_playhead;constexpr double pixelsPerBeat=42.0;double y=strike-(n.start-reference)*pixelsPerBeat;double w=qMax(12.0,width()/92.0),h=qMax(15.0,n.duration*pixelsPerBeat);if(y<-40||y-h>height()+30)continue;bool ex=m_waitMode&&qAbs(n.start-m_groupStart)<.01&&m_expected.contains(n.note);QColor c=ex?QColor("#ef775f"):QColor(n.hand==Hand::Left?"#86aebd":"#77cbb8");QRectF r(xFor(n.note)-w/2,y-h,w,h);p.setPen(Qt::NoPen);p.setBrush(c);p.drawRoundedRect(r,w/2,w/2);if(ex){p.setBrush(QColor(239,119,95,38));p.drawEllipse(QPointF(xFor(n.note),strike),15,15);}}}
     qint64 now=m_clock.elapsed();m_pulses.erase(std::remove_if(m_pulses.begin(),m_pulses.end(),[&](const Pulse&a){return now-a.born>700;}),m_pulses.end());for(const auto&a:m_pulses){double age=(now-a.born)/700.0;p.setPen(QPen(QColor(111,220,193,int(200*(1-age))),2));p.setBrush(Qt::NoBrush);p.drawEllipse(QPointF(xFor(a.note),strike),8+age*22,8+age*22);}
 }

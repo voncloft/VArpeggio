@@ -613,6 +613,20 @@ QString MusicDocument::noteName(int midi, bool withOctave) {
     return QString::fromLatin1(kNames[normalized]) + (withOctave ? QString::number(midi / 12 - 1) : QString());
 }
 
+QString MusicDocument::spelledNoteName(int midi, int fifths,
+                                       AccidentalMark accidental,
+                                       bool withOctave) {
+    static const char *sharpNames[] = {"C", "C♯", "D", "D♯", "E", "F",
+                                       "F♯", "G", "G♯", "A", "A♯", "B"};
+    static const char *flatNames[] = {"C", "D♭", "D", "E♭", "E", "F",
+                                      "G♭", "G", "A♭", "A", "B♭", "B"};
+    const bool useFlats = accidental == AccidentalMark::Flat ||
+                          (accidental != AccidentalMark::Sharp && fifths < 0);
+    const int normalized = ((midi % 12) + 12) % 12;
+    return QString::fromUtf8((useFlats ? flatNames : sharpNames)[normalized]) +
+           (withOctave ? QString::number(midi / 12 - 1) : QString());
+}
+
 QVector<NoteEvent> MusicDocument::morningLight() {
     QVector<NoteEvent> n;
     const int melody[] = {60,62,64,67,69,67,64,62,60,64,67,72};
