@@ -79,7 +79,7 @@ Soundtrack-only polyphonic transcription remains experimental. Clean solo piano 
 
 - The BPM control accepts 30–260 BPM and can be changed while Listen or Play Along is active.
 - Changing BPM retimes generated piano playback, live staff, falling notes, keyboard highlights, and metronome from the same musical position.
-- The orange play line can be dragged to seek in Wait, Listen, and Play Along modes.
+- The orange play line can be dragged to seek in Wait, Listen, Play Along, and Free Play score preview.
 - The Earlier–Latest history bar and mouse wheel can review completed measures while playback continues; moving back to Latest restores live follow.
 - Playback supports pause, resume, and stop.
 - Live follow advances by measures and keeps the current measure readable instead of shrinking the entire piece onto one line.
@@ -87,6 +87,12 @@ Soundtrack-only polyphonic transcription remains experimental. Clean solo piano 
 - Right, Left, and Together filters support separate-hand practice.
 
 ## Changelog
+
+### 0.2.2 — 2026-10-14
+
+- Fixed Free Play score preview so the grand staff follows the orange play line and advances measure-by-measure during playback.
+- Preview now starts from a manually positioned orange line instead of always jumping back to the beginning.
+- While Free Play preview is active or paused, the orange line can be dragged to another section and resumed from that point; stopping restores normal point-and-click notation editing.
 
 ### 0.2.1 — 2026-10-13
 

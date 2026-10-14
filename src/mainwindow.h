@@ -97,6 +97,7 @@ private:
     void refreshFreePlayStaff();
     void editFreePlayStaff();
     void updateFreePlayHistory(bool followLatest);
+    void updateFreePlayPreviewHistory(double liveBeat, bool forceFollow = false);
     void updateScoreHistory(double liveBeat, bool forceFollow = false);
     void syncFreePlayScore();
     void setFreePlayGrouping(bool grouped, double beat = -1.0);

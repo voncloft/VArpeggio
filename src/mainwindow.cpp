@@ -1216,16 +1216,13 @@ void MainWindow::connectUi() {
                m_scoreHistoryBar->maximum()));
   });
   connect(m_score, &ScoreWidget::seekPreviewChanged, this, [this](double beat) {
-    if (m_mode == Mode::Free)
-      return;
     if (m_playing)
       pausePlayback();
     m_score->setPlayedBeat(beat);
     m_bubble->setPlayhead(beat);
   });
   connect(m_score, &ScoreWidget::seekRequested, this, [this](double beat) {
-    if (m_mode != Mode::Free)
-      seekPlayback(beat);
+    seekPlayback(beat);
   });
   connect(m_score, &ScoreWidget::editCursorChanged, this, [this](double beat) {
     if (m_mode != Mode::Free)
@@ -1873,11 +1870,23 @@ void MainWindow::togglePlayback(){
         auto included=[&](const NoteEvent &note){return m_handFilter<0||(m_handFilter==0&&note.hand==Hand::Left)||(m_handFilter==1&&note.hand==Hand::Right);};
         for(int i=0;i<m_notes.size();++i){const auto &note=m_notes[i];if(!included(note)||note.start>currentBeat+.001)continue;m_startedEvents.insert(i);if(note.start+note.duration<=currentBeat+.001)m_endedEvents.insert(i);else if(!m_usingImportedMediaAudio)playbackNoteOn(i);}
         m_groupIndex=0;while(m_groupIndex+1<m_groups.size()&&m_groups[m_groupIndex+1].start<=currentBeat+.08)++m_groupIndex;
-        m_playing=true;m_playbackPaused=false;m_playClock.restart();m_metroClock.restart();m_lastMetroBeat=-1;updateExpected();m_score->setPlayedBeat(currentBeat);updateScoreHistory(currentBeat);m_bubble->setPlayhead(currentBeat);updatePrimaryButton();toast(m_usingImportedMediaAudio?"Original recording resumed":"Score playback resumed");return;
+        m_playing=true;m_playbackPaused=false;m_playClock.restart();m_metroClock.restart();m_lastMetroBeat=-1;if(m_mode==Mode::Free){m_score->setEditEnabled(false);m_score->setSeekEnabled(true);m_score->setExpected({},0);m_bubble->setExpected({},0);m_score->setPlayedBeat(currentBeat);updateFreePlayPreviewHistory(currentBeat,true);}else{updateExpected();m_score->setPlayedBeat(currentBeat);updateScoreHistory(currentBeat);}m_bubble->setPlayhead(currentBeat);updatePrimaryButton();toast(m_usingImportedMediaAudio?"Original recording resumed":"Score playback resumed");return;
     }
     if(m_earTraining){playEarTrainingPrompt();return;}
     if(m_mode==Mode::Wait){stopPlayback(true);rebuildPractice();m_metroClock.restart();toast("Wait mode restarted — nothing moves until you play the correct key");return;}
-    if(m_mode==Mode::Free){if(m_recording)finishRecording();if(m_freePlayNotes.isEmpty()){toast("Add at least one note before previewing the score");return;}syncFreePlayScore();m_usingImportedMediaAudio=false;m_playbackPaused=false;m_playbackOffsetSeconds=0;if(!m_midiOutputCheck->isChecked())m_synth.startSequence(m_freePlayNotes,m_tempo);m_playing=true;m_playClock.restart();m_metroClock.restart();m_lastMetroBeat=-1;m_startedEvents.clear();m_endedEvents.clear();m_midiOutputNotes.clear();m_score->setEditCursorBeat(-1);updatePrimaryButton();toast(m_midiOutputCheck->isChecked()?"Sending the Free Play staff to the keyboard":"Playing the notes shown on the Free Play staff");return;}
+    if(m_mode==Mode::Free){
+        if(m_recording)finishRecording();
+        if(m_freePlayNotes.isEmpty()){toast("Add at least one note before previewing the score");return;}
+        syncFreePlayScore();m_usingImportedMediaAudio=false;m_playbackPaused=false;
+        double scoreEnd=0;for(const auto &note:m_freePlayNotes)scoreEnd=qMax(scoreEnd,note.start+note.duration);
+        const double startBeat=m_freePlayEditBeat>=0?qBound(0.0,m_freePlayEditBeat,scoreEnd):0.0;
+        m_playbackOffsetSeconds=startBeat*60.0/qMax(1,m_tempo);
+        if(!m_midiOutputCheck->isChecked())m_synth.startSequence(m_freePlayNotes,m_tempo,startBeat);
+        m_playing=true;m_playClock.restart();m_metroClock.restart();m_lastMetroBeat=-1;m_startedEvents.clear();m_endedEvents.clear();m_midiOutputNotes.clear();
+        for(int i=0;i<m_notes.size();++i){const auto &note=m_notes[i];if(note.start>startBeat+.001)continue;m_startedEvents.insert(i);if(note.start+note.duration<=startBeat+.001)m_endedEvents.insert(i);else playbackNoteOn(i);}
+        m_freePlayAutoFollow=true;m_score->setEditCursorBeat(-1);m_score->setEditEnabled(false);m_score->setSeekEnabled(true);m_score->setExpected({},0);m_bubble->setExpected({},0);m_score->setPlayedBeat(startBeat);m_bubble->setPlayhead(startBeat);updateFreePlayPreviewHistory(startBeat,true);updatePrimaryButton();
+        toast(m_midiOutputCheck->isChecked()?"Sending the Free Play staff to the keyboard from the orange line":"Playing the Free Play staff from the orange line");return;
+    }
     if(m_recording)finishRecording();if(m_notes.isEmpty()){showNotice("Import or record some notes first.",true);return;}
     m_usingImportedMediaAudio=useImportedMediaAudio();m_playbackPaused=false;m_playbackOffsetSeconds=0;
     if(m_usingImportedMediaAudio){m_sourcePlayer->setPlaybackRate(m_importedMediaTempo>0?double(m_tempo)/m_importedMediaTempo:1.0);m_sourcePlayer->setPosition(m_importedMediaStartMs);m_sourcePlayer->play();}
@@ -1895,7 +1904,7 @@ void MainWindow::pausePlayback(){
     for(int i:m_startedEvents)if(!m_endedEvents.contains(i))playbackNoteOff(i);
     m_synth.stopSequence();m_midiOutput.allNotesOff();m_midiOutputNotes.clear();
     m_playbackOffsetSeconds=elapsedSeconds;m_playing=false;m_playbackPaused=true;
-    m_score->setPlayedBeat(beat);updateScoreHistory(beat);m_bubble->setPlayhead(beat);updatePrimaryButton();toast("Paused — press Play to resume");
+    m_score->setPlayedBeat(beat);if(m_mode==Mode::Free)updateFreePlayPreviewHistory(beat);else updateScoreHistory(beat);m_bubble->setPlayhead(beat);updatePrimaryButton();toast("Paused — press Play to resume");
 }
 
 void MainWindow::seekPlayback(double beat){
@@ -1911,7 +1920,7 @@ void MainWindow::seekPlayback(double beat){
     m_playbackOffsetSeconds=beat*60.0/qMax(1,clockTempo);m_playbackPaused=true;m_playing=false;
     if(m_usingImportedMediaAudio)m_sourcePlayer->setPosition(m_importedMediaStartMs+qRound64(m_playbackOffsetSeconds*1000.0));
     for(int i=0;i<m_notes.size();++i){const auto &note=m_notes[i];const bool use=m_handFilter<0||(m_handFilter==0&&note.hand==Hand::Left)||(m_handFilter==1&&note.hand==Hand::Right);if(!use||note.start>beat+.001)continue;m_startedEvents.insert(i);if(note.start+note.duration<=beat+.001)m_endedEvents.insert(i);}
-    updateExpected();m_scoreAutoFollow=true;m_score->setPlayedBeat(beat);updateScoreHistory(beat,true);m_bubble->setPlayhead(beat);updatePrimaryButton();toast("Moved to this point — press Play to resume");
+    if(m_mode==Mode::Free){m_freePlayAutoFollow=true;m_score->setEditEnabled(false);m_score->setSeekEnabled(true);m_score->setExpected({},0);m_bubble->setExpected({},0);m_score->setPlayedBeat(beat);updateFreePlayPreviewHistory(beat,true);}else{updateExpected();m_scoreAutoFollow=true;m_score->setPlayedBeat(beat);updateScoreHistory(beat,true);}m_bubble->setPlayhead(beat);updatePrimaryButton();toast("Moved to this point — press Play to resume");
 }
 
 void MainWindow::stopPlayback(bool rewind){
@@ -1923,7 +1932,7 @@ void MainWindow::stopPlayback(bool rewind){
     m_playing=false;m_playbackPaused=false;m_usingImportedMediaAudio=false;m_playbackOffsetSeconds=0;
     m_sourcePlayer->stop();m_startedEvents.clear();m_endedEvents.clear();m_synth.stopSequence();m_midiOutput.allNotesOff();m_midiOutputNotes.clear();
     for(int n=21;n<=108;++n)if(!m_heldNotes.contains(n))m_piano->setActive(n,false);
-    if(rewind){m_score->setPlayedBeat(-1);if(m_mode==Mode::Free)m_score->setFollowBeat(m_freePlayEditBeat>=0?m_freePlayEditBeat:0);else{m_scoreAutoFollow=true;updateScoreHistory(0,true);}m_bubble->setPlayhead(0);}if(m_mode==Mode::Free)m_score->setEditCursorBeat(m_freePlayEditBeat);updatePrimaryButton();
+    if(rewind){m_score->setPlayedBeat(-1);if(m_mode==Mode::Free)m_score->setFollowBeat(m_freePlayEditBeat>=0?m_freePlayEditBeat:0);else{m_scoreAutoFollow=true;updateScoreHistory(0,true);}m_bubble->setPlayhead(0);}if(m_mode==Mode::Free){m_score->setEditEnabled(true);m_score->setSeekEnabled(false);m_score->setEditCursorBeat(m_freePlayEditBeat);}updatePrimaryButton();
 }
 
 void MainWindow::updateClocks(){
@@ -1934,7 +1943,7 @@ void MainWindow::updateClocks(){
         if(m_usingImportedMediaAudio&&m_sourcePlayer->position()>=m_importedMediaStartMs){elapsedSeconds=(m_sourcePlayer->position()-m_importedMediaStartMs)/1000.0;clockTempo=m_importedMediaTempo>0?m_importedMediaTempo:m_tempo;}
         beat=elapsedSeconds*clockTempo/60.0;clockActive=true;
         for(int i=0;i<m_notes.size();++i){const auto&n=m_notes[i];bool use=m_handFilter<0||(m_handFilter==0&&n.hand==Hand::Left)||(m_handFilter==1&&n.hand==Hand::Right);if(!use)continue;if(!m_startedEvents.contains(i)&&beat>=n.start){m_startedEvents.insert(i);playbackNoteOn(i);}if(m_startedEvents.contains(i)&&!m_endedEvents.contains(i)&&beat>=n.start+n.duration){m_endedEvents.insert(i);playbackNoteOff(i);}}
-        m_score->setPlayedBeat(beat);m_bubble->setPlayhead(beat);const int previousGroup=m_groupIndex;while(m_groupIndex+1<m_groups.size()&&m_groups[m_groupIndex+1].start<=beat+.08)m_groupIndex++;if(m_groupIndex!=previousGroup){m_matched.clear();updateExpected();}updateScoreHistory(beat);
+        m_score->setPlayedBeat(beat);m_bubble->setPlayhead(beat);if(m_mode==Mode::Free)updateFreePlayPreviewHistory(beat);else{const int previousGroup=m_groupIndex;while(m_groupIndex+1<m_groups.size()&&m_groups[m_groupIndex+1].start<=beat+.08)m_groupIndex++;if(m_groupIndex!=previousGroup){m_matched.clear();updateExpected();}updateScoreHistory(beat);}
         double end=0;for(const auto&n:m_notes){const bool use=m_handFilter<0||(m_handFilter==0&&n.hand==Hand::Left)||(m_handFilter==1&&n.hand==Hand::Right);if(use)end=qMax(end,n.start+n.duration);}if(beat>end+.2){const bool repeat=m_mode==Mode::Follow;stopPlayback(repeat);if(repeat)QTimer::singleShot(0,this,[this]{if(m_mode==Mode::Follow&&!m_playing&&!m_playbackPaused&&!m_notes.isEmpty())togglePlayback();});}
     }else if(m_mode==Mode::Wait&&!m_earTraining&&!m_groups.isEmpty()){
         const qint64 now=m_waitAdvanceClock.elapsed();
@@ -1994,6 +2003,16 @@ void MainWindow::updateFreePlayHistory(bool followLatest){
     const int maximum=qMax(0,qCeil(endBeat*8.0));const bool follow=followLatest||m_freePlayAutoFollow;const int oldValue=m_scoreHistoryBar->value();const int value=follow?maximum:(m_freePlayEditBeat>=0?qBound(0,qRound(m_freePlayEditBeat*8.0),maximum):qMin(oldValue,maximum));
     {const QSignalBlocker blocker(m_scoreHistoryBar);m_scoreHistoryBar->setRange(0,maximum);m_scoreHistoryBar->setPageStep(32);m_scoreHistoryBar->setValue(value);m_scoreHistoryBar->setEnabled(maximum>0);}
     m_freePlayAutoFollow=follow||value>=maximum;m_score->setFollowBeat(value/8.0);m_score->repaint();
+}
+
+void MainWindow::updateFreePlayPreviewHistory(double liveBeat,bool forceFollow){
+    double endBeat=0;for(const auto &event:m_freePlayNotes)endBeat=qMax(endBeat,event.start+event.duration);for(const auto &rest:m_freePlayRests)endBeat=qMax(endBeat,rest.beat+rest.duration);for(const auto &signature:m_freePlayTimeSignatures)endBeat=qMax(endBeat,signature.beat);for(const auto &signature:m_freePlayKeySignatures)endBeat=qMax(endBeat,signature.beat);for(double repeat:m_freePlayRepeatEnds)endBeat=qMax(endBeat,repeat);
+    liveBeat=qBound(0.0,liveBeat,endBeat);const int maximum=qMax(0,qCeil(endBeat*8.0));const bool follow=forceFollow||m_freePlayAutoFollow;const int oldValue=m_scoreHistoryBar->value();const int value=follow?qBound(0,qRound(liveBeat*8.0),maximum):qMin(oldValue,maximum);
+    {const QSignalBlocker blocker(m_scoreHistoryBar);m_scoreHistoryBar->setRange(0,maximum);m_scoreHistoryBar->setPageStep(32);m_scoreHistoryBar->setValue(value);m_scoreHistoryBar->setEnabled(maximum>0);}
+    // Preview playback follows the orange play line, not the end of the
+    // editable score.  A user can still drag back to inspect an earlier
+    // measure; dragging to Latest re-enables live following.
+    m_freePlayAutoFollow=follow||value>=maximum;m_score->setFollowBeat(follow?liveBeat:value/8.0);m_score->repaint();
 }
 
 void MainWindow::updateScoreHistory(double liveBeat,bool forceFollow){
