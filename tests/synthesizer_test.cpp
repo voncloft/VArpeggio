@@ -86,6 +86,20 @@ int main(int argc, char **argv) {
     ok &= check(scheduledStep<.08f,"sample-clock repeated notes remain click-free");
     stream.stopSequence();
 
+    // If the desktop audio server starves the sink, restarting at full sample
+    // amplitude creates a second crack when sound resumes. Recovery begins at
+    // zero and fades back in while preserving the active piano voice.
+    SynthStream recovered;
+    recovered.noteOn(67,108);
+    render(recovered,4096);
+    recovered.prepareAudioRecovery();
+    const auto recovery=render(recovered,4096);
+    float recoveryStep=0;
+    for(int index=1;index<recovery.size();++index)recoveryStep=std::max(recoveryStep,std::abs(recovery[index]-recovery[index-1]));
+    ok &= check(std::abs(recovery.first())<.002f,"underrun recovery restarts at silence");
+    ok &= check(recoveryStep<.08f,"underrun recovery fades in without a crack");
+    ok &= check(rms(recovery,recovery.size()-1024)>.001,"underrun recovery keeps the piano voice alive");
+
     // Real engraved scores keep adding attacks while bass notes, ties and
     // damper releases are still sounding.  Exercise that sustained density,
     // not merely one chord at time zero: this is the pattern that exposed the

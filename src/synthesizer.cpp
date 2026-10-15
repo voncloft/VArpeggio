@@ -238,6 +238,7 @@ void SynthStream::setMuted(bool muted) { QMutexLocker lock(&m_mutex); m_muted=mu
 void SynthStream::setVolume(double volume) { m_volumeTarget.store(qBound(0.0,volume,1.5),std::memory_order_relaxed); }
 void SynthStream::setInstrument(SynthInstrument instrument) { QMutexLocker lock(&m_mutex);if(instrument!=m_instrument)stopRecordedVoices(false);m_instrument=instrument; }
 void SynthStream::setOutputSampleRate(int sampleRate) { QMutexLocker lock(&m_mutex);if(m_voices.isEmpty()&&m_recordedVoices.isEmpty()&&!m_sequenceActive)m_sampleRate=qBound(22050,sampleRate,192000); }
+void SynthStream::prepareAudioRecovery() { QMutexLocker lock(&m_mutex);m_muteGain=0.0;m_lastOutputLeft=0.0;m_lastOutputRight=0.0; }
 
 void SynthStream::startSequence(const QVector<NoteEvent> &notes,int tempo,double startBeat) {
     QMutexLocker lock(&m_mutex);
@@ -404,18 +405,18 @@ Synthesizer::Synthesizer(QObject *parent) : QObject(parent), m_stream(this) {
     if(!device.isFormatSupported(format)){format.setSampleRate(48000);if(!device.isFormatSupported(format))return;}
     m_stream.setOutputSampleRate(format.sampleRate());
     m_sink=std::make_unique<QAudioSink>(device,format,this);
-    // Keep enough audio ready for dense sampled-piano jumps.  PulseAudio was
-    // observed running the old 32 KiB request with only about 31 ms queued;
-    // that is easy to underrun when many sample voices begin together.  A
-    // 64 KiB safety buffer is still bounded (about 186 ms of float stereo at
-    // 44.1 kHz), while the mixer continues working in short 512-frame chunks
-    // so sliders and MIDI input are never locked behind a whole buffer.
-    m_sink->setBufferSize(65536);m_sink->start(&m_stream);
+    // Keep enough audio ready for dense sampled-piano jumps. The previous
+    // 64 KiB request removed constant crackle but could still underrun during
+    // an occasional desktop scheduling stall. 96 KiB adds roughly 85 ms of
+    // safety at 48 kHz without changing the sample data or mixer tone. The
+    // mixer still works in short 512-frame chunks, so UI controls never wait
+    // behind the complete sink buffer.
+    m_sink->setBufferSize(98304);m_sink->start(&m_stream);
     connect(m_sink.get(),&QAudioSink::stateChanged,this,[this](QAudio::State state){
         if(!m_sink||m_recoveringAudio||state!=QAudio::IdleState||m_sink->error()!=QAudio::UnderrunError)return;
         // A scheduler hiccup should create one short gap, not a stream that
         // keeps crackling. Reset and refill the existing stream immediately.
-        m_recoveringAudio=true;m_sink->reset();m_sink->start(&m_stream);m_recoveringAudio=false;
+        m_recoveringAudio=true;m_stream.prepareAudioRecovery();m_sink->reset();m_sink->setBufferSize(98304);m_sink->start(&m_stream);m_recoveringAudio=false;
     });
 }
 

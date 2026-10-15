@@ -34,6 +34,11 @@ struct StaffRestEvent {
     Hand hand = Hand::Right;
 };
 
+struct PedalEvent {
+    double beat = 0.0;
+    bool down = false;
+};
+
 struct TranscriptionInfo {
     int tempo = 0;
     double tempoConfidence = 0.0;
@@ -83,8 +88,10 @@ public:
                            QVector<TimeSignatureEvent> *timeSignatures = nullptr,
                            QVector<double> *repeatEnds = nullptr,
                            QVector<KeySignatureEvent> *keySignatures = nullptr,
-                           QVector<StaffRestEvent> *rests = nullptr);
-    static bool saveMidi(const QString &path, const QVector<NoteEvent> &notes, int tempo, QString *error);
+                           QVector<StaffRestEvent> *rests = nullptr,
+                           QVector<PedalEvent> *pedals = nullptr);
+    static bool saveMidi(const QString &path, const QVector<NoteEvent> &notes, int tempo, QString *error,
+                         const QVector<PedalEvent> &pedals = {});
     static bool saveMusicXml(const QString &path, const QVector<NoteEvent> &notes, int tempo,
                              const QString &title, QString *error);
     static bool saveEngravedScore(const QString &musicXmlPath, const QString &pdfPath,
@@ -93,7 +100,8 @@ public:
                                   const QVector<TimeSignatureEvent> &timeSignatures = {},
                                   const QVector<double> &repeatEnds = {},
                                   const QVector<KeySignatureEvent> &keySignatures = {},
-                                  const QVector<StaffRestEvent> &rests = {});
+                                  const QVector<StaffRestEvent> &rests = {},
+                                  const QVector<PedalEvent> &pedals = {});
     static bool saveAbc(const QString &path, const QVector<NoteEvent> &notes, int tempo,
                         const QString &title, QString *error);
     static bool saveJson(const QString &path, const QVector<NoteEvent> &notes, int tempo,
@@ -101,7 +109,8 @@ public:
                          const QVector<TimeSignatureEvent> &timeSignatures = {},
                          const QVector<double> &repeatEnds = {},
                          const QVector<KeySignatureEvent> &keySignatures = {},
-                         const QVector<StaffRestEvent> &rests = {});
+                         const QVector<StaffRestEvent> &rests = {},
+                         const QVector<PedalEvent> &pedals = {});
     static bool saveCsv(const QString &path, const QVector<NoteEvent> &notes, QString *error);
     static bool saveWav(const QString &path, const QVector<NoteEvent> &notes, int tempo, QString *error);
 
@@ -128,5 +137,6 @@ private:
                            QVector<TimeSignatureEvent> *timeSignatures,
                            QVector<double> *repeatEnds,
                            QVector<KeySignatureEvent> *keySignatures,
-                           QVector<StaffRestEvent> *rests);
+                           QVector<StaffRestEvent> *rests,
+                           QVector<PedalEvent> *pedals);
 };

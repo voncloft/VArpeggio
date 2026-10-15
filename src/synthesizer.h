@@ -35,6 +35,7 @@ public:
     void setVolume(double volume);
     void setInstrument(SynthInstrument instrument);
     void setOutputSampleRate(int sampleRate);
+    void prepareAudioRecovery();
     qint64 readData(char *data, qint64 maxlen) override;
     qint64 writeData(const char *, qint64) override { return 0; }
     bool recordedPianoAvailable() const { return bool(m_recordedPiano); }

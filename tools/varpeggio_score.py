@@ -269,6 +269,7 @@ def build_musicxml(project: dict) -> str:
     endpoints += [round(float(beat) * DIVISIONS) for beat in project.get("repeatEnds", [])]
     endpoints += [round(float(event.get("beat", 0)) * DIVISIONS) + DIVISIONS for event in project.get("timeSignatures", [])]
     endpoints += [round(float(event.get("beat", 0)) * DIVISIONS) + DIVISIONS for event in project.get("keySignatures", [])]
+    endpoints += [round(float(event.get("beat", 0)) * DIVISIONS) for event in project.get("pedalEvents", [])]
     last_tick = max(endpoints, default=TICKS_PER_MEASURE)
     plans = measure_plan(project, last_tick)
     measures: list[str] = []
@@ -306,6 +307,18 @@ def build_musicxml(project: dict) -> str:
         system_measure_count = min(3, len(plans) - system_start)
         measure_width = round(960 / system_measure_count)
         content = [f'<measure number="{number}" width="{measure_width}">', layout, attributes]
+        for pedal in project.get("pedalEvents", []):
+            tick = max(0, round(float(pedal.get("beat", 0)) * DIVISIONS))
+            if plan.start <= tick < plan.end or (tick == plan.end and measure_index == len(plans) - 1):
+                offset = tick - plan.start
+                pedal_type = "start" if bool(pedal.get("down")) else "stop"
+                value = "yes" if bool(pedal.get("down")) else "no"
+                content.append(
+                    '<direction placement="below">'
+                    f'<direction-type><pedal type="{pedal_type}" line="yes" sign="yes"/></direction-type>'
+                    f'<offset>{offset}</offset><staff>2</staff><sound damper-pedal="{value}"/>'
+                    '</direction>'
+                )
         first_voice = True
         for staff in (1, 2):
             for voice_index, groups in enumerate(voices[staff], start=1):

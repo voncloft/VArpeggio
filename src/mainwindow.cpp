@@ -23,6 +23,7 @@
 #include <QFontMetrics>
 #include <QFutureWatcher>
 #include <QGraphicsDropShadowEffect>
+#include <QIcon>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QImage>
@@ -37,6 +38,9 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QPainter>
+#include <QPainterPath>
+#include <QPalette>
+#include <QPixmap>
 #include <QPdfView>
 #include <QPdfWriter>
 #include <QProgressDialog>
@@ -68,10 +72,35 @@
 #include <limits>
 
 #ifndef VARPEGGIO_VERSION
-#define VARPEGGIO_VERSION "0.2.1"
+#define VARPEGGIO_VERSION "0.2.7"
 #endif
 
 namespace {
+class HoverEventFilter final : public QObject {
+public:
+    HoverEventFilter(QObject *parent,std::function<void()> entered,std::function<void()> left)
+        :QObject(parent),m_entered(std::move(entered)),m_left(std::move(left)){}
+protected:
+    bool eventFilter(QObject *watched,QEvent *event) override{
+        if(event->type()==QEvent::Enter&&m_entered)m_entered();
+        else if(event->type()==QEvent::Leave&&m_left)m_left();
+        return QObject::eventFilter(watched,event);
+    }
+private:
+    std::function<void()> m_entered,m_left;
+};
+QPixmap pushpinPixmap(const QColor &color){
+    QPixmap pixmap(24,24);pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(QPen(color,1.8,Qt::SolidLine,Qt::RoundCap,Qt::RoundJoin));
+    painter.setBrush(color);
+    QPainterPath head;head.moveTo(8,4);head.lineTo(16,4);head.lineTo(15,7);head.lineTo(15,12);head.lineTo(18,14);head.lineTo(18,16);head.lineTo(6,16);head.lineTo(6,14);head.lineTo(9,12);head.lineTo(9,7);head.closeSubpath();
+    painter.drawPath(head);painter.drawLine(QPointF(12,16),QPointF(12,22));
+    return pixmap;
+}
+QIcon pushpinIcon(){
+    QIcon icon;icon.addPixmap(pushpinPixmap(QColor("#add4c9")),QIcon::Normal,QIcon::Off);icon.addPixmap(pushpinPixmap(QColor("#17312c")),QIcon::Normal,QIcon::On);return icon;
+}
 QLabel *label(const QString &text,const QString &name={}){auto*l=new QLabel(text);if(!name.isEmpty())l->setObjectName(name);return l;}
 QPushButton *button(const QString &text,const QString &name={}){auto*b=new QPushButton(text);if(!name.isEmpty())b->setObjectName(name);b->setCursor(Qt::PointingHandCursor);return b;}
 QFrame *line(bool vertical=false){auto*f=new QFrame;f->setFrameShape(vertical?QFrame::VLine:QFrame::HLine);f->setObjectName("divider");return f;}
@@ -346,11 +375,13 @@ bool MainWindow::saveDetectorVideoFile(const QString &path,const QString &source
 
 MainWindow::MainWindow(QWidget *parent):QMainWindow(parent),m_synth(this),m_midi(this),m_midiOutput(this){
     setWindowTitle("VArpeggio — piano practice & notation studio");setMinimumSize(1080,760);resize(1420,930);
-    m_sourceAudioOutput=new QAudioOutput(this);m_sourcePlayer=new QMediaPlayer(this);m_sourcePlayer->setAudioOutput(m_sourceAudioOutput);
+    const bool noAudio=qEnvironmentVariableIsSet("VARPEGGIO_NO_AUDIO")||qEnvironmentVariableIsSet("KEYFLOW_NO_AUDIO");
+    m_sourcePlayer=new QMediaPlayer(this);if(!noAudio){m_sourceAudioOutput=new QAudioOutput(this);m_sourcePlayer->setAudioOutput(m_sourceAudioOutput);}
     m_keyMap={{Qt::Key_A,60},{Qt::Key_W,61},{Qt::Key_S,62},{Qt::Key_E,63},{Qt::Key_D,64},{Qt::Key_F,65},{Qt::Key_T,66},{Qt::Key_G,67},{Qt::Key_Y,68},{Qt::Key_H,69},{Qt::Key_U,70},{Qt::Key_J,71},{Qt::Key_K,72}};
     auto*root=new QWidget;auto*rootLayout=new QVBoxLayout(root);rootLayout->setContentsMargins(0,0,0,0);rootLayout->setSpacing(0);rootLayout->addWidget(buildHeader());auto*body=new QWidget;auto*bodyLayout=new QHBoxLayout(body);bodyLayout->setContentsMargins(0,0,0,0);bodyLayout->setSpacing(0);bodyLayout->addWidget(buildSidebar());bodyLayout->addWidget(buildWorkspace(),1);rootLayout->addWidget(body,1);setCentralWidget(root);
     buildMenus();applyStyle();connectUi();setSong("Morning Light",MusicDocument::morningLight(),96);setMode(Mode::Wait);
-    m_frameTimer.setInterval(25);connect(&m_frameTimer,&QTimer::timeout,this,&MainWindow::updateClocks);m_frameTimer.start();m_metroClock.start();m_waitAdvanceClock.start();m_midi.start();statusBar()->hide();
+    QSettings windowSettings("Voncloft","VArpeggio");const QByteArray savedGeometry=windowSettings.value("ui/mainWindowGeometry").toByteArray();if(!savedGeometry.isEmpty())restoreGeometry(savedGeometry);const QByteArray savedWindowState=windowSettings.value("ui/mainWindowState").toByteArray();if(!savedWindowState.isEmpty())restoreState(savedWindowState);if(windowSettings.value("ui/mainWindowMaximized",false).toBool())setWindowState(windowState()|Qt::WindowMaximized);
+    m_frameTimer.setInterval(25);connect(&m_frameTimer,&QTimer::timeout,this,&MainWindow::updateClocks);m_frameTimer.start();m_metroClock.start();m_waitAdvanceClock.start();if(!noAudio)m_midi.start();statusBar()->hide();
 }
 MainWindow::~MainWindow(){if(m_sourcePlayer)m_sourcePlayer->stop();m_midi.stop();m_midi.wait(1000);}
 void MainWindow::openPath(const QString &path){openScore(path);}
@@ -427,12 +458,25 @@ QWidget *MainWindow::buildSidebar() {
   const QFontMetrics systemMetrics(QApplication::font());
   const int sidebarWidth =
       qMax(340, systemMetrics.horizontalAdvance("Experimental transcription") + 100);
-  w->setMinimumWidth(sidebarWidth);
+  constexpr int compactContentWidth = 72;
+  constexpr int compactSidebarWidth = 86;
+  w->setFixedWidth(sidebarWidth);
   scroll->setFixedWidth(sidebarWidth + 14);
   auto *l = new QVBoxLayout(w);
   l->setContentsMargins(14, 23, 14, 16);
   l->setSpacing(5);
-  l->addWidget(label("STUDIO", "sideHeading"));
+  auto *collapseRow = new QHBoxLayout;
+  collapseRow->setContentsMargins(0, 0, 0, 4);
+  collapseRow->addStretch();
+  auto *sidebarCollapse = button("", "sidebarCollapseButton");
+  sidebarCollapse->setCheckable(true);
+  sidebarCollapse->setIcon(pushpinIcon());
+  sidebarCollapse->setIconSize(QSize(22,22));
+  sidebarCollapse->setToolTip("Pin sidebar open");
+  collapseRow->addWidget(sidebarCollapse);
+  l->addLayout(collapseRow);
+  auto *studioHeading = label("STUDIO", "sideHeading");
+  l->addWidget(studioHeading);
   m_modeButtons = new QButtonGroup(this);
   m_modeButtons->setExclusive(true);
   struct Entry {
@@ -445,21 +489,34 @@ QWidget *MainWindow::buildSidebar() {
       {"Listen", "Hear the imported sheet", Mode::Listen, "♫"},
       {"Play along", "Follow the tempo", Mode::Follow, "▶"},
       {"Free play", "Play freely or record", Mode::Free, "⌁"}};
+  struct SidebarPresentation {
+    QPushButton *button = nullptr;
+    QString icon;
+    QString fullText;
+    QString toolTip;
+    int fullHeight = 46;
+  };
+  QVector<SidebarPresentation> presentations;
   for (auto &e : entries) {
-    auto *b =
-        button(e.icon + "    " + e.text + "\n       " + e.tip, "modeButton");
+    const QString fullText=e.icon + "    " + e.text + "\n       " + e.tip;
+    auto *b = button(fullText, "modeButton");
     b->setCheckable(true);
     b->setProperty("mode", int(e.mode));
-    b->setMinimumHeight(qMax(68, systemMetrics.height() * 2 + 20));
+    const int height=qMax(68, systemMetrics.height() * 2 + 20);
+    b->setMinimumHeight(height);
+    b->setToolTip(e.text+" — "+e.tip);
+    presentations.append({b,e.icon,fullText,e.text+" — "+e.tip,height});
     m_modeButtons->addButton(b);
     m_modeButtons->setId(b, int(e.mode));
     l->addWidget(b);
   }
   m_modeButtons->button(int(Mode::Wait))->setChecked(true);
   l->addSpacing(10);
-  l->addWidget(line());
+  auto *studioDivider=line();
+  l->addWidget(studioDivider);
   l->addSpacing(7);
-  l->addWidget(label("MUSIC", "sideHeading"));
+  auto *musicHeading=label("MUSIC", "sideHeading");
+  l->addWidget(musicHeading);
   auto *morning =
       button("𝄞    Morning Light\n       18 notes · beginner", "libraryButton");
   auto *ode =
@@ -468,15 +525,24 @@ QWidget *MainWindow::buildSidebar() {
   morning->setMinimumHeight(qMax(68, systemMetrics.height() * 2 + 20));
   ode->setMinimumHeight(qMax(68, systemMetrics.height() * 2 + 20));
   import->setMinimumHeight(qMax(46, systemMetrics.height() + 18));
+  presentations.append({morning,"𝄞",morning->text(),"Morning Light — beginner",morning->minimumHeight()});
+  presentations.append({ode,"♫",ode->text(),"Ode to Joy — beginner",ode->minimumHeight()});
+  presentations.append({import,"＋",import->text(),"Import a score",import->minimumHeight()});
   l->addWidget(morning);
   l->addWidget(ode);
   l->addWidget(import);
+  auto *chords=button("♬   Chord practice\n      Every root, family, and inversion","libraryButton");
+  chords->setMinimumHeight(qMax(68,systemMetrics.height()*2+20));
+  chords->setToolTip("Choose any chord root, family, inversion, and hand");
+  presentations.append({chords,"♬",chords->text(),chords->toolTip(),chords->minimumHeight()});
+  l->addWidget(chords);
   connect(morning, &QPushButton::clicked, this, [this] {
     setSong("Morning Light", MusicDocument::morningLight(), 96);
   });
   connect(ode, &QPushButton::clicked, this,
           [this] { setSong("Ode to Joy", MusicDocument::odeToJoy(), 92); });
   connect(import, &QPushButton::clicked, this, &MainWindow::importScore);
+  connect(chords,&QPushButton::clicked,this,&MainWindow::openChordPractice);
   auto *daily = new QFrame;
   daily->setObjectName("dailyCard");
   daily->setMinimumHeight(qMax(176, systemMetrics.height() * 4 + 78));
@@ -496,13 +562,45 @@ QWidget *MainWindow::buildSidebar() {
   dl->addWidget(routine);
   connect(routine, &QPushButton::clicked, this, &MainWindow::openRoutineDialog);
   l->addWidget(daily);
+  auto *compactRoutine=button("▣","libraryButton");
+  compactRoutine->setToolTip("Open today's practice plan");
+  compactRoutine->setMinimumHeight(54);
+  compactRoutine->hide();
+  l->addWidget(compactRoutine);
+  connect(compactRoutine,&QPushButton::clicked,this,&MainWindow::openRoutineDialog);
   l->addStretch();
-  auto *lab =
-      button("✦   Video → notes       LAB\n      Experimental transcription",
-             "labButton");
-  lab->setMinimumHeight(qMax(72, systemMetrics.height() * 2 + 20));
-  l->addWidget(lab);
-  connect(lab, &QPushButton::clicked, this, &MainWindow::openVideoLab);
+  auto setSidebarCompact=[=](bool compact,bool pinnedOpen){
+    sidebarCollapse->setProperty("compact",compact);
+    sidebarCollapse->setProperty("pinned",pinnedOpen);
+    sidebarCollapse->setChecked(pinnedOpen);
+    sidebarCollapse->setToolTip(pinnedOpen?"Unpin sidebar":"Pin sidebar open");
+    scroll->setFixedWidth(compact?compactSidebarWidth:sidebarWidth+14);
+    w->setFixedWidth(compact?compactContentWidth:sidebarWidth);
+    l->setContentsMargins(compact?8:14,23,compact?8:14,16);
+    studioHeading->setVisible(!compact);musicHeading->setVisible(!compact);
+    studioDivider->setVisible(!compact);daily->setVisible(!compact);
+    compactRoutine->setVisible(compact);
+    for(const auto &item:presentations){
+      item.button->setProperty("compact",compact);
+      item.button->setText(compact?item.icon:item.fullText);
+      item.button->setToolTip(item.toolTip);
+      item.button->setMinimumHeight(compact?54:item.fullHeight);
+      item.button->setMaximumHeight(compact?54:QWIDGETSIZE_MAX);
+      item.button->style()->unpolish(item.button);
+      item.button->style()->polish(item.button);
+    }
+    sidebarCollapse->style()->unpolish(sidebarCollapse);
+    sidebarCollapse->style()->polish(sidebarCollapse);
+  };
+  auto compactPreference=std::make_shared<bool>(QSettings("Voncloft","VArpeggio").value("ui/sidebarCompact",false).toBool());
+  setSidebarCompact(*compactPreference,!*compactPreference);
+  connect(sidebarCollapse,&QPushButton::clicked,this,[compactPreference,setSidebarCompact]{
+    *compactPreference=!*compactPreference;
+    setSidebarCompact(*compactPreference,!*compactPreference);
+    QSettings("Voncloft","VArpeggio").setValue("ui/sidebarCompact",*compactPreference);
+  });
+  auto *hoverFilter=new HoverEventFilter(scroll,[compactPreference,setSidebarCompact]{if(*compactPreference)setSidebarCompact(false,false);},[compactPreference,setSidebarCompact]{if(*compactPreference)setSidebarCompact(true,false);});
+  scroll->installEventFilter(hoverFilter);
   scroll->setWidget(w);
   return scroll;
 }
@@ -692,6 +790,10 @@ QWidget *MainWindow::buildWorkspace() {
   st->setContentsMargins(16, 7, 13, 7);
   m_barLabel = label("SCORE   ·   Bar 1 of 3", "sectionHeading");
   st->addWidget(m_barLabel);
+  auto *scoreControls = new QWidget;
+  auto *scoreControlsLayout = new QHBoxLayout(scoreControls);
+  scoreControlsLayout->setContentsMargins(0, 0, 0, 0);
+  scoreControlsLayout->setSpacing(6);
   m_freeEditButton = button("✎  Edit staff…", "freeStaffButton");
   m_freeEditButton->setToolTip("Change pitch, timing, length, hand, or remove "
                                "notes from the Free Play grand staff");
@@ -700,8 +802,8 @@ QWidget *MainWindow::buildWorkspace() {
       "Remove every note from the Free Play grand staff");
   m_freeEditButton->hide();
   m_freeClearButton->hide();
-  st->addWidget(m_freeEditButton);
-  st->addWidget(m_freeClearButton);
+  scoreControlsLayout->addWidget(m_freeEditButton);
+  scoreControlsLayout->addWidget(m_freeClearButton);
   m_scoreDisplayButtons = new QButtonGroup(this);
   m_scoreDisplayButtons->setExclusive(true);
   m_scoreViewButton = button("Exact PDF", "scoreViewButton");
@@ -716,9 +818,9 @@ QWidget *MainWindow::buildWorkspace() {
   m_scoreDisplayButtons->addButton(m_liveScoreButton, 1);
   m_scoreViewButton->hide();
   m_liveScoreButton->hide();
-  st->addWidget(m_scoreViewButton);
-  st->addWidget(m_liveScoreButton);
-  st->addStretch();
+  scoreControlsLayout->addWidget(m_scoreViewButton);
+  scoreControlsLayout->addWidget(m_liveScoreButton);
+  scoreControlsLayout->addStretch();
   m_handButtons = new QButtonGroup(this);
   m_handButtons->setExclusive(true);
   auto *hands = new QWidget;
@@ -734,7 +836,7 @@ QWidget *MainWindow::buildWorkspace() {
     hl->addWidget(b);
   }
   m_handButtons->button(2)->setChecked(true);
-  st->addWidget(hands);
+  scoreControlsLayout->addWidget(hands);
   m_metronome = new QCheckBox("Metronome");
   m_noteNames = new QCheckBox("Note names");
   m_noteNames->setToolTip(
@@ -742,8 +844,16 @@ QWidget *MainWindow::buildWorkspace() {
   m_bubbles = new QCheckBox("Falling notes");
   m_bubbles->setChecked(true);
   for (auto *c : {m_metronome, m_noteNames, m_bubbles})
-    st->addWidget(c);
+    scoreControlsLayout->addWidget(c);
+  st->addWidget(scoreControls, 1);
+  auto *scoreCollapse = button("⌃", "sectionCollapseButton");
+  scoreCollapse->setToolTip("Collapse the Grand Staff section");
+  st->addWidget(scoreCollapse);
   sl->addWidget(scoreTop);
+  auto *scoreBody = new QWidget;
+  auto *scoreBodyLayout = new QVBoxLayout(scoreBody);
+  scoreBodyLayout->setContentsMargins(0, 0, 0, 0);
+  scoreBodyLayout->setSpacing(0);
   m_scoreStack = new QStackedWidget;
   m_score = new ScoreWidget;
   m_scoreStack->addWidget(m_score);
@@ -754,7 +864,7 @@ QWidget *MainWindow::buildWorkspace() {
   m_pdfView->setZoomMode(QPdfView::ZoomMode::FitToWidth);
   m_scoreStack->addWidget(m_pdfView);
   m_scoreStack->setMinimumHeight(520);
-  sl->addWidget(m_scoreStack, 1);
+  scoreBodyLayout->addWidget(m_scoreStack, 1);
   m_scoreHistoryRow = new QWidget;
   m_scoreHistoryRow->setObjectName("scoreHistoryRow");
   auto *historyLayout = new QHBoxLayout(m_scoreHistoryRow);
@@ -771,12 +881,55 @@ QWidget *MainWindow::buildWorkspace() {
   historyLayout->addWidget(m_scoreHistoryBar, 1);
   historyLayout->addWidget(label("LATEST →", "historyLabel"));
   m_scoreHistoryRow->hide();
-  sl->addWidget(m_scoreHistoryRow);
+  scoreBodyLayout->addWidget(m_scoreHistoryRow);
+  sl->addWidget(scoreBody, 1);
+  auto setScoreExpanded = [scoreCard, scoreTop, scoreBody, scoreControls,
+                           scoreCollapse](bool expanded) {
+    scoreCollapse->setProperty("expanded", expanded);
+    scoreCollapse->setText(expanded ? "⌃" : "⌄");
+    scoreCollapse->setToolTip(expanded ? "Collapse the Grand Staff section"
+                                       : "Expand the Grand Staff section");
+    scoreBody->setVisible(expanded);
+    scoreControls->setVisible(expanded);
+    scoreCard->setMaximumHeight(expanded ? QWIDGETSIZE_MAX
+                                         : scoreTop->sizeHint().height());
+    scoreCard->setSizePolicy(QSizePolicy::Preferred,
+                             expanded ? QSizePolicy::Expanding
+                                      : QSizePolicy::Fixed);
+  };
+  const bool scoreExpanded =
+      QSettings("Voncloft", "VArpeggio").value("ui/scoreExpanded", true).toBool();
+  setScoreExpanded(scoreExpanded);
+  connect(scoreCollapse, &QPushButton::clicked, this,
+          [scoreCollapse, setScoreExpanded] {
+            const bool expanded = !scoreCollapse->property("expanded").toBool();
+            setScoreExpanded(expanded);
+            QSettings("Voncloft", "VArpeggio").setValue("ui/scoreExpanded",
+                                                           expanded);
+          });
   l->addWidget(scoreCard, 3);
-  auto *practice = new QHBoxLayout;
-  practice->setAlignment(Qt::AlignTop);
+  auto *practiceSection = makeCard("card");
+  practiceSection->setFixedHeight(340);
+  auto *practiceSectionLayout = new QVBoxLayout(practiceSection);
+  practiceSectionLayout->setContentsMargins(0, 0, 0, 0);
+  practiceSectionLayout->setSpacing(0);
+  auto *practiceTop = new QWidget;
+  practiceTop->setObjectName("cardTop");
+  auto *sectionHeader = new QHBoxLayout(practiceTop);
+  sectionHeader->setContentsMargins(16, 6, 14, 6);
+  sectionHeader->addWidget(label("BUBBLES + LIVE COACH", "sectionHeading"));
+  sectionHeader->addStretch();
+  auto *flowCollapse = button("⌃", "sectionCollapseButton");
+  flowCollapse->setToolTip("Collapse Bubbles and Live Coach");
+  sectionHeader->addWidget(flowCollapse);
+  practiceSectionLayout->addWidget(practiceTop);
+  auto *practiceBody = new QWidget;
+  practiceBody->setObjectName("practiceBody");
+  auto *practice = new QHBoxLayout(practiceBody);
+  practice->setContentsMargins(10, 10, 10, 10);
+  practice->setSpacing(10);
   auto *flow = makeCard("flowCard");
-  flow->setFixedHeight(300);
+  flow->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
   auto *fl = new QVBoxLayout(flow);
   fl->setContentsMargins(0, 0, 0, 0);
   fl->setSpacing(0);
@@ -795,7 +948,7 @@ QWidget *MainWindow::buildWorkspace() {
   practice->addWidget(flow, 1);
   auto *coach = makeCard("coachCard");
   coach->setFixedWidth(330);
-  coach->setFixedHeight(300);
+  coach->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
   auto *cl = new QVBoxLayout(coach);
   cl->setContentsMargins(15, 14, 15, 12);
   cl->addWidget(label("LIVE COACH", "coachHeading"));
@@ -829,7 +982,28 @@ QWidget *MainWindow::buildWorkspace() {
   }
   cl->addLayout(stats);
   practice->addWidget(coach);
-  l->addLayout(practice);
+  practiceSectionLayout->addWidget(practiceBody, 1);
+  auto setFlowExpanded = [practiceSection, practiceBody, practiceTop,
+                          flowCollapse](bool expanded) {
+    flowCollapse->setProperty("expanded", expanded);
+    flowCollapse->setText(expanded ? "⌃" : "⌄");
+    flowCollapse->setToolTip(expanded ? "Collapse Bubbles and Live Coach"
+                                      : "Expand Bubbles and Live Coach");
+    practiceBody->setVisible(expanded);
+    practiceSection->setFixedHeight(expanded ? 340
+                                              : practiceTop->sizeHint().height());
+  };
+  const bool flowExpanded =
+      QSettings("Voncloft", "VArpeggio").value("ui/flowExpanded", true).toBool();
+  setFlowExpanded(flowExpanded);
+  connect(flowCollapse, &QPushButton::clicked, this,
+          [flowCollapse, setFlowExpanded] {
+            const bool expanded = !flowCollapse->property("expanded").toBool();
+            setFlowExpanded(expanded);
+            QSettings("Voncloft", "VArpeggio").setValue("ui/flowExpanded",
+                                                           expanded);
+          });
+  l->addWidget(practiceSection);
   auto *keyboard = makeCard("card");
   keyboard->setFixedHeight(235);
   auto *kl = new QVBoxLayout(keyboard);
@@ -848,12 +1022,17 @@ QWidget *MainWindow::buildWorkspace() {
   kt->addStretch();
   kt->addWidget(
       label("Computer keys: A W S E D F T G Y H U J K", "computerHint"));
+  auto *keyboardCollapse = button("⌃", "sectionCollapseButton");
+  keyboardCollapse->setToolTip("Collapse the Keyboard section");
+  kt->addWidget(keyboardCollapse);
   m_recordButton = button("●  Record free play", "recordButton");
   m_recordButton->setToolTip(
       "Optional: capture this Free Play session and turn it into a score");
   kt->addWidget(m_recordButton);
   kRows->addLayout(kt);
-  auto *audioRow = new QHBoxLayout;
+  auto *audioSection = new QWidget;
+  auto *audioRow = new QHBoxLayout(audioSection);
+  audioRow->setContentsMargins(0, 0, 0, 0);
   audioRow->setSpacing(8);
   audioRow->addWidget(label("PIANO SOUND", "sectionHeading"));
   m_instrumentCombo = new QComboBox;
@@ -928,10 +1107,31 @@ QWidget *MainWindow::buildWorkspace() {
   m_volume->setToolTip("Playback and practice volume");
   audioRow->addWidget(m_volume);
   audioRow->addStretch();
-  kRows->addLayout(audioRow);
+  kRows->addWidget(audioSection);
   kl->addWidget(kTop);
   m_piano = new PianoWidget;
   kl->addWidget(m_piano, 1);
+  auto setKeyboardExpanded = [keyboard, kTop, audioSection, this,
+                              keyboardCollapse](bool expanded) {
+    keyboardCollapse->setProperty("expanded", expanded);
+    keyboardCollapse->setText(expanded ? "⌃" : "⌄");
+    keyboardCollapse->setToolTip(expanded ? "Collapse the Keyboard section"
+                                          : "Expand the Keyboard section");
+    m_piano->setVisible(expanded);
+    audioSection->setVisible(expanded);
+    keyboard->setFixedHeight(expanded ? 235 : kTop->sizeHint().height());
+  };
+  const bool keyboardExpanded =
+      QSettings("Voncloft", "VArpeggio").value("ui/keyboardExpanded", true).toBool();
+  setKeyboardExpanded(keyboardExpanded);
+  connect(keyboardCollapse, &QPushButton::clicked, this,
+          [keyboardCollapse, setKeyboardExpanded] {
+            const bool expanded =
+                !keyboardCollapse->property("expanded").toBool();
+            setKeyboardExpanded(expanded);
+            QSettings("Voncloft", "VArpeggio")
+                .setValue("ui/keyboardExpanded", expanded);
+          });
   l->addWidget(keyboard, 2);
   scroll->setWidget(page);
   return scroll;
@@ -948,14 +1148,16 @@ void MainWindow::buildMenus() {
   auto *practice = menuBar()->addMenu("&Practice");
   practice->addAction("Daily practice plan…", this,
                       &MainWindow::openRoutineDialog);
+  practice->addAction("Chord practice…", this,
+                      &MainWindow::openChordPractice);
   practice->addAction("Ear training — Find the sound", this, [this] {
     m_routinePlanDate = QDate::currentDate();
     m_routineVariation = dailyRoutineTheme(m_routinePlanDate).chordOrder;
     loadRoutineStep(4);
   });
-  practice->addSeparator();
-  practice->addAction("Video/audio to notes…", this, &MainWindow::openVideoLab);
   practice->addAction("Open Director…", this, &MainWindow::openDetectorView);
+  auto *experimental = menuBar()->addMenu("&Experimental");
+  experimental->addAction("Video Notes", this, &MainWindow::openVideoLab);
   auto *help = menuBar()->addMenu("&Help");
   help->addAction("About VArpeggio", this, [this] {
     QMessageBox::about(
@@ -980,6 +1182,15 @@ void MainWindow::applyStyle() {
 #scoreViewButton:disabled{color:#9aa7a3;background:#f0f1ed;border-color:#d7ddd9}
 #freeStaffButton{color:#31534d;background:#f3faf7;border:1px solid #aebdb8;border-radius:6px;padding:4px 8px;font-size:9px;font-weight:700}
 #freeStaffButton:hover{color:white;background:#2d7d70;border-color:#2d7d70}
+#sectionCollapseButton,#flowCollapseButton{min-width:32px;max-width:32px;min-height:28px;max-height:28px;border-radius:14px;font-size:17px;font-weight:800;padding:0}
+#sectionCollapseButton{color:#2d7d70;background:#eef7f4;border:1px solid #9fc9be}
+#sectionCollapseButton:hover{color:white;background:#2d7d70;border-color:#2d7d70}
+#flowCollapseButton{color:#9dd6c8;background:#203d37;border:1px solid #42675e}
+#flowCollapseButton:hover{color:white;background:#2d7d70;border-color:#6ea99a}
+#sidebarCollapseButton{min-width:34px;max-width:34px;min-height:30px;max-height:30px;color:#add4c9;background:#203d37;border:1px solid #42675e;border-radius:15px;font-size:15px;font-weight:800;padding:0}
+#sidebarCollapseButton:hover{color:white;background:#2d7d70;border-color:#6ea99a}
+#sidebarCollapseButton:checked{color:#17312c;background:#9dd6c8;border-color:#bfe3d9}
+#modeButton[compact="true"],#libraryButton[compact="true"],#importButton[compact="true"],#labButton[compact="true"]{text-align:center;font-size:23px;padding:4px;border-radius:9px}
 #scoreHistoryRow{background:#f5f7f3;border-top:1px solid #e1e6e2}
 #historyLabel{color:#71807c;font-family:"Noto Sans Mono";font-size:8px;font-weight:700}
 #scoreHistoryBar::groove:horizontal{height:6px;background:#d6ddd9;border-radius:3px}
@@ -1074,13 +1285,16 @@ void MainWindow::connectUi() {
   const int savedKeyboardTone =
       qBound(0, audioSettings.value("midi/ctk511Tone", 0).toInt(), 99);
   m_keyboardToneCombo->setCurrentIndex(savedKeyboardTone);
+  const int savedVolume=qBound(0,audioSettings.value("audio/volume",115).toInt(),150);
+  m_volume->setValue(savedVolume);m_synth.setVolume(savedVolume/100.0);
+  if(m_sourceAudioOutput)m_sourceAudioOutput->setVolume(qBound(0.0,savedVolume/100.0,1.0));
+  m_volumeLabel->setText(QString("Volume %1%").arg(savedVolume));
   if (audioSettings.value("midi/useOutput", false).toBool()) {
     QString error;
     if (m_midiOutput.openFirst(&error)) {
       m_midiOutputCheck->setChecked(true);
       m_midiOutput.programChange(savedKeyboardTone);
-    } else
-      audioSettings.setValue("midi/useOutput", false);
+    }
   }
   connect(
       m_keyboardToneCombo, &QComboBox::currentIndexChanged, this, [this](int) {
@@ -1119,7 +1333,7 @@ void MainWindow::connectUi() {
           &BubbleWidget::setBubblesVisible);
   connect(m_sound, &QCheckBox::toggled, this, [this](bool on) {
     m_synth.setMuted(!on);
-    m_sourceAudioOutput->setMuted(!on);
+    if(m_sourceAudioOutput)m_sourceAudioOutput->setMuted(!on);
   });
   connect(m_instrumentCombo, &QComboBox::currentIndexChanged, this,
           [this](int) {
@@ -1132,7 +1346,8 @@ void MainWindow::connectUi() {
           });
   connect(m_volume, &QSlider::valueChanged, this, [this](int value) {
     m_synth.setVolume(value / 100.0);
-    m_sourceAudioOutput->setVolume(qBound(0.0, value / 100.0, 1.0));
+    if(m_sourceAudioOutput)m_sourceAudioOutput->setVolume(qBound(0.0, value / 100.0, 1.0));
+    QSettings("Voncloft","VArpeggio").setValue("audio/volume",value);
     if (m_midiOutputCheck->isChecked() && m_midiOutput.isOpen())
       m_midiOutput.channelVolume(qRound(value * 127.0 / 150.0));
     m_volumeLabel->setText(
@@ -1490,6 +1705,7 @@ void MainWindow::connectUi() {
         m_score->setKeySignatures(m_freePlayKeySignatures);
         m_score->setRests(m_freePlayRests);
         m_score->setRepeatEnds(m_freePlayRepeatEnds);
+        m_score->setPedalEvents(m_freePlayPedals);
         syncFreePlayScore();
         updateFreePlayHistory(false);
       });
@@ -1502,8 +1718,7 @@ void MainWindow::connectUi() {
     } else if (m_sourceAudio->isEnabled())
       toast("Generated-score playback selected");
   });
-  m_sourceAudioOutput->setVolume(1.0);
-  m_sourceAudioOutput->setMuted(!m_sound->isChecked());
+  if(m_sourceAudioOutput){m_sourceAudioOutput->setVolume(qBound(0.0,m_volume->value()/100.0,1.0));m_sourceAudioOutput->setMuted(!m_sound->isChecked());}
   connect(m_sourcePlayer, &QMediaPlayer::errorOccurred, this,
           [this](QMediaPlayer::Error, const QString &message) {
             if (!message.isEmpty() && m_usingImportedMediaAudio)
@@ -1535,6 +1750,24 @@ void MainWindow::connectUi() {
   connect(&m_midi, &MidiInput::noteOn, this, &MainWindow::userNoteOn);
   connect(&m_midi, &MidiInput::noteOff, this, &MainWindow::userNoteOff);
   connect(&m_midi, &MidiInput::sustain, this, [this](bool down) {
+    if (m_mode == Mode::Free && !m_playing && down != m_sustain) {
+      if (!m_freePlayClock.isValid())
+        m_freePlayClock.start();
+      const double rawBeat = m_freePlayEditBeat >= 0 && !m_recording
+                                 ? m_freePlayEditBeat
+                                 : m_freePlayOffsetBeat +
+                                       m_freePlayClock.elapsed() / 1000.0 *
+                                           m_tempo / 60.0;
+      const double beat = qMax(0.0, qRound(rawBeat * 8.0) / 8.0);
+      if (m_freePlayPedals.isEmpty() || m_freePlayPedals.last().down != down) {
+        m_freePlayPedals.append({beat, down});
+        m_score->setPedalEvents(m_freePlayPedals);
+        syncFreePlayScore();
+        updateFreePlayHistory(m_freePlayAutoFollow);
+        m_barLabel->setText(down ? "FREE PLAY   ·   Pedal down"
+                                 : "FREE PLAY   ·   Pedal released");
+      }
+    }
     m_sustain = down;
     if (!down) {
       for (int n : m_sustainedNotes) {
@@ -1562,8 +1795,18 @@ void MainWindow::connectUi() {
             m_midiButton->setText(ok ? "●   " + devices.first()
                                      : "●   Connect MIDI keyboard");
             m_midiLabel = nullptr;
-            if (ok)
+            if (ok) {
+              QSettings settings("Voncloft","VArpeggio");
+              if(settings.value("midi/useOutput",false).toBool()&&!m_midiOutput.isOpen()){
+                QString error;
+                if(m_midiOutput.openFirst(&error)){
+                  const QSignalBlocker blocker(m_midiOutputCheck);m_midiOutputCheck->setChecked(true);
+                  m_midiOutput.programChange(m_keyboardToneCombo->currentData().toInt());m_midiOutput.channelVolume(qRound(m_volume->value()*127.0/150.0));
+                  m_instrumentCombo->hide();m_keyboardToneCombo->show();m_volumeLabel->setText(QString("Keyboard %1%").arg(m_volume->value()));
+                }
+              }
               toast("MIDI connected: " + devices.first());
+            }
           });
   connect(&m_midi, &MidiInput::midiError, this,
           [this](const QString &e) { showNotice(e, true); });
@@ -1629,54 +1872,83 @@ void MainWindow::setMode(Mode mode) {
     updateScoreHistory(0.0, true);
   }
   if (mode == Mode::Free && previous != Mode::Free) {
-    m_freePlayNotes.clear();
+    // Free Play is its own in-session workspace.  Switching modes must not
+    // destroy its notation; only the explicit Clear staff action does that.
+    // Drop transient held-key bookkeeping, then restore the cached score,
+    // notation settings, and insertion position exactly where the user left
+    // them.
     m_freePlayStarts.clear();
     m_freePlayIndexes.clear();
     m_freePlayPressMs.clear();
     m_freePlayEditPressMs.clear();
-    m_freePlayApplied = false;
-    m_freePlayAutoFollow = true;
-    m_freePlayGroupEntry = false;
-    m_freePlayOffsetBeat = 0;
-    m_freePlayEditBeat = -1;
     m_freePlayEditAdvance = 0;
-    m_freePlayTimeSignatures = {{0.0, 4, 4}};
-    m_freePlayKeySignatures = {{0.0, 0}};
-    m_freePlayRests.clear();
-    m_freePlayRepeatEnds.clear();
-    m_freePlayClock.invalidate();
+    double endBeat = 0;
+    for (const auto &event : m_freePlayNotes)
+      endBeat = qMax(endBeat, event.start + event.duration);
+    for (const auto &rest : m_freePlayRests)
+      endBeat = qMax(endBeat, rest.beat + rest.duration);
+    m_freePlayOffsetBeat = m_freePlayNotes.isEmpty() && m_freePlayRests.isEmpty()
+                               ? 0.0
+                               : endBeat + .5;
+    if (m_freePlayNotes.isEmpty() && m_freePlayRests.isEmpty())
+      m_freePlayClock.invalidate();
+    else
+      m_freePlayClock.restart();
     m_handFilter = -1;
     m_score->setHandFilter(-1);
     m_bubble->setHandFilter(-1);
     if (auto *b = m_handButtons->button(2))
       b->setChecked(true);
     m_score->setNotes(m_freePlayNotes);
-    m_score->setEditCursorBeat(-1);
+    m_score->setEditCursorBeat(m_freePlayEditBeat);
     m_score->setTimeSignatures(m_freePlayTimeSignatures);
     m_score->setKeySignatures(m_freePlayKeySignatures);
     m_score->setRests(m_freePlayRests);
     m_score->setRepeatEnds(m_freePlayRepeatEnds);
+    m_score->setPedalEvents(m_freePlayPedals);
     m_bubble->setNotes(m_freePlayNotes);
     m_score->setExpected({}, 0);
     m_bubble->setExpected({}, 0);
-    m_score->setFollowBeat(0);
-    m_bubble->setPlayhead(0);
-    m_barLabel->setText("FREE PLAY   ·   Click staff to insert · Right-click "
-                        "for notation tools");
-    m_noteCountLabel->setText("0 notes");
-    m_durationLabel->setText("0:00");
-    updateFreePlayHistory(true);
+    const double focusBeat = m_freePlayEditBeat >= 0
+                                 ? m_freePlayEditBeat
+                                 : qMax(0.0, endBeat);
+    m_score->setFollowBeat(focusBeat);
+    m_score->setPlayedBeat(-1);
+    m_bubble->setPlayhead(focusBeat);
+    const int seconds = qRound(endBeat * 60.0 / qMax(1, m_tempo));
+    m_noteCountLabel->setText(
+        QString("%1 notes · %2 rests")
+            .arg(m_freePlayNotes.size())
+            .arg(m_freePlayRests.size()));
+    m_durationLabel->setText(QString("%1:%2")
+                                 .arg(seconds / 60)
+                                 .arg(seconds % 60, 2, 10, QChar('0')));
+    updateFreePlayHistory(m_freePlayAutoFollow);
+    if (m_freePlayNotes.isEmpty() && m_freePlayRests.isEmpty())
+      m_barLabel->setText("FREE PLAY   ·   Click staff to insert · Right-click "
+                          "for notation tools");
+    else if (m_freePlayEditBeat >= 0)
+      m_barLabel->setText("FREE PLAY   ·   " +
+                          scorePosition(m_freePlayEditBeat,
+                                        m_freePlayTimeSignatures) +
+                          (m_freePlayGroupEntry
+                               ? " · GROUPING · Right-click to ungroup"
+                               : " · Each note steps forward"));
+    else
+      m_barLabel->setText(
+          QString("FREE PLAY   ·   Restored staff · %1 notes")
+              .arg(m_freePlayNotes.size()));
     m_scoreStack->setCurrentWidget(m_score);
     if (m_liveScoreButton->isVisible())
       m_liveScoreButton->setChecked(true);
   } else if (mode != Mode::Free && previous == Mode::Free) {
-    m_freePlayEditBeat = -1;
     m_score->setEditCursorBeat(-1);
     m_score->setTimeSignatures({{0.0, 4, 4}});
     m_score->setKeySignatures(
         {{0.0, MusicDocument::inferKeySignature(filteredNotes())}});
     m_score->setRests({});
     m_score->setRepeatEnds({});
+    m_score->setPedalEvents({});
     m_score->setNotes(m_notes);
     m_bubble->setNotes(m_notes);
     updateSongMeta();
@@ -1685,13 +1957,20 @@ void MainWindow::setMode(Mode mode) {
   if (mode == Mode::Free) {
     m_score->setExpected({}, 0);
     m_bubble->setExpected({}, 0);
-    if (m_freePlayEditBeat < 0)
-      m_barLabel->setText("FREE PLAY   ·   Click staff to insert · Right-click "
-                          "for notation tools");
+    if (m_freePlayEditBeat < 0) {
+      if (m_freePlayNotes.isEmpty() && m_freePlayRests.isEmpty())
+        m_barLabel->setText(
+            "FREE PLAY   ·   Click staff to insert · Right-click for "
+            "notation tools");
+      else
+        m_barLabel->setText(
+            QString("FREE PLAY   ·   Restored staff · %1 notes")
+                .arg(m_freePlayNotes.size()));
+    }
   }
   updatePrimaryButton();
 }
-void MainWindow::setSong(const QString&title,const QVector<NoteEvent>&notes,int tempo){stopPlayback(false);clearImportedMediaSource();m_bubble->resetState();m_title=title;m_notes=notes;m_tempo=qBound(30,tempo,260);m_titleEdit->setText(title);m_titleEdit->setCursorPosition(0);if(m_tempoControl){const QSignalBlocker blocker(m_tempoControl);m_tempoControl->setValue(m_tempo);}m_pdfDocument->close();m_generatedScoreDir.reset();m_scoreViewButton->setText("Exact PDF");m_scoreViewButton->hide();m_liveScoreButton->hide();m_liveScoreButton->setEnabled(true);m_liveScoreButton->setChecked(true);m_scoreStack->setCurrentWidget(m_score);m_score->setTimeSignatures({{0.0,4,4}});m_score->setKeySignatures({{0.0,MusicDocument::inferKeySignature(notes)}});m_score->setRests({});m_score->setRepeatEnds({});m_score->setNotes(notes);m_bubble->setNotes(notes);m_notice->hide();rebuildPractice();updateSongMeta();}
+void MainWindow::setSong(const QString&title,const QVector<NoteEvent>&notes,int tempo){stopPlayback(false);clearImportedMediaSource();m_bubble->resetState();m_title=title;m_notes=notes;m_tempo=qBound(30,tempo,260);m_titleEdit->setText(title);m_titleEdit->setCursorPosition(0);if(m_tempoControl){const QSignalBlocker blocker(m_tempoControl);m_tempoControl->setValue(m_tempo);}m_pdfDocument->close();m_generatedScoreDir.reset();m_scoreViewButton->setText("Exact PDF");m_scoreViewButton->hide();m_liveScoreButton->hide();m_liveScoreButton->setEnabled(true);m_liveScoreButton->setChecked(true);m_scoreStack->setCurrentWidget(m_score);m_score->setTimeSignatures({{0.0,4,4}});m_score->setKeySignatures({{0.0,MusicDocument::inferKeySignature(notes)}});m_score->setRests({});m_score->setRepeatEnds({});m_score->setPedalEvents({});m_score->setNotes(notes);m_bubble->setNotes(notes);m_notice->hide();rebuildPractice();updateSongMeta();}
 void MainWindow::setExactScoreAvailable(const QString &label){m_scoreViewButton->setText(label);m_scoreViewButton->show();m_liveScoreButton->setEnabled(!m_notes.isEmpty());m_liveScoreButton->show();m_scoreViewButton->setChecked(true);m_scoreStack->setCurrentWidget(m_pdfView);}
 
 void MainWindow::updatePrimaryButton(){if(m_playing){m_playButton->setText("Ⅱ  Pause");return;}if(m_playbackPaused){m_playButton->setText("▶  Resume");return;}if(m_earTraining){m_playButton->setText("♫  Hear again");return;}switch(m_mode){case Mode::Wait:m_playButton->setText("◎  Restart wait");break;case Mode::Listen:m_playButton->setText("▶  Listen");break;case Mode::Follow:m_playButton->setText("▶  Play along");break;case Mode::Free:m_playButton->setText("▶  Preview score");break;}}
@@ -1944,7 +2223,7 @@ void MainWindow::updateClocks(){
         beat=elapsedSeconds*clockTempo/60.0;clockActive=true;
         for(int i=0;i<m_notes.size();++i){const auto&n=m_notes[i];bool use=m_handFilter<0||(m_handFilter==0&&n.hand==Hand::Left)||(m_handFilter==1&&n.hand==Hand::Right);if(!use)continue;if(!m_startedEvents.contains(i)&&beat>=n.start){m_startedEvents.insert(i);playbackNoteOn(i);}if(m_startedEvents.contains(i)&&!m_endedEvents.contains(i)&&beat>=n.start+n.duration){m_endedEvents.insert(i);playbackNoteOff(i);}}
         m_score->setPlayedBeat(beat);m_bubble->setPlayhead(beat);if(m_mode==Mode::Free)updateFreePlayPreviewHistory(beat);else{const int previousGroup=m_groupIndex;while(m_groupIndex+1<m_groups.size()&&m_groups[m_groupIndex+1].start<=beat+.08)m_groupIndex++;if(m_groupIndex!=previousGroup){m_matched.clear();updateExpected();}updateScoreHistory(beat);}
-        double end=0;for(const auto&n:m_notes){const bool use=m_handFilter<0||(m_handFilter==0&&n.hand==Hand::Left)||(m_handFilter==1&&n.hand==Hand::Right);if(use)end=qMax(end,n.start+n.duration);}if(beat>end+.2){const bool repeat=m_mode==Mode::Follow;stopPlayback(repeat);if(repeat)QTimer::singleShot(0,this,[this]{if(m_mode==Mode::Follow&&!m_playing&&!m_playbackPaused&&!m_notes.isEmpty())togglePlayback();});}
+        double end=0;for(const auto&n:m_notes){const bool use=m_handFilter<0||(m_handFilter==0&&n.hand==Hand::Left)||(m_handFilter==1&&n.hand==Hand::Right);if(use)end=qMax(end,n.start+n.duration);}if(beat>end+.2){const bool repeat=m_mode==Mode::Follow;const bool rewind=repeat||m_mode==Mode::Listen;stopPlayback(rewind);if(repeat)QTimer::singleShot(0,this,[this]{if(m_mode==Mode::Follow&&!m_playing&&!m_playbackPaused&&!m_notes.isEmpty())togglePlayback();});}
     }else if(m_mode==Mode::Wait&&!m_earTraining&&!m_groups.isEmpty()){
         const qint64 now=m_waitAdvanceClock.elapsed();
         const double elapsedBeats=qMax<qint64>(0,now-m_lastWaitAdvanceMs)*m_tempo/60000.0;
@@ -1999,14 +2278,14 @@ void MainWindow::setFreePlayGrouping(bool grouped,double beat){
 }
 
 void MainWindow::updateFreePlayHistory(bool followLatest){
-    double endBeat=0;for(const auto &event:m_freePlayNotes)endBeat=qMax(endBeat,event.start+event.duration);for(const auto &rest:m_freePlayRests)endBeat=qMax(endBeat,rest.beat+rest.duration);for(const auto &signature:m_freePlayTimeSignatures)endBeat=qMax(endBeat,signature.beat);for(const auto &signature:m_freePlayKeySignatures)endBeat=qMax(endBeat,signature.beat);for(double repeat:m_freePlayRepeatEnds)endBeat=qMax(endBeat,repeat);if(m_freePlayEditBeat>=0)endBeat=qMax(endBeat,m_freePlayEditBeat);
+    double endBeat=0;for(const auto &event:m_freePlayNotes)endBeat=qMax(endBeat,event.start+event.duration);for(const auto &rest:m_freePlayRests)endBeat=qMax(endBeat,rest.beat+rest.duration);for(const auto &signature:m_freePlayTimeSignatures)endBeat=qMax(endBeat,signature.beat);for(const auto &signature:m_freePlayKeySignatures)endBeat=qMax(endBeat,signature.beat);for(double repeat:m_freePlayRepeatEnds)endBeat=qMax(endBeat,repeat);for(const auto &pedal:m_freePlayPedals)endBeat=qMax(endBeat,pedal.beat);if(m_freePlayEditBeat>=0)endBeat=qMax(endBeat,m_freePlayEditBeat);
     const int maximum=qMax(0,qCeil(endBeat*8.0));const bool follow=followLatest||m_freePlayAutoFollow;const int oldValue=m_scoreHistoryBar->value();const int value=follow?maximum:(m_freePlayEditBeat>=0?qBound(0,qRound(m_freePlayEditBeat*8.0),maximum):qMin(oldValue,maximum));
     {const QSignalBlocker blocker(m_scoreHistoryBar);m_scoreHistoryBar->setRange(0,maximum);m_scoreHistoryBar->setPageStep(32);m_scoreHistoryBar->setValue(value);m_scoreHistoryBar->setEnabled(maximum>0);}
     m_freePlayAutoFollow=follow||value>=maximum;m_score->setFollowBeat(value/8.0);m_score->repaint();
 }
 
 void MainWindow::updateFreePlayPreviewHistory(double liveBeat,bool forceFollow){
-    double endBeat=0;for(const auto &event:m_freePlayNotes)endBeat=qMax(endBeat,event.start+event.duration);for(const auto &rest:m_freePlayRests)endBeat=qMax(endBeat,rest.beat+rest.duration);for(const auto &signature:m_freePlayTimeSignatures)endBeat=qMax(endBeat,signature.beat);for(const auto &signature:m_freePlayKeySignatures)endBeat=qMax(endBeat,signature.beat);for(double repeat:m_freePlayRepeatEnds)endBeat=qMax(endBeat,repeat);
+    double endBeat=0;for(const auto &event:m_freePlayNotes)endBeat=qMax(endBeat,event.start+event.duration);for(const auto &rest:m_freePlayRests)endBeat=qMax(endBeat,rest.beat+rest.duration);for(const auto &signature:m_freePlayTimeSignatures)endBeat=qMax(endBeat,signature.beat);for(const auto &signature:m_freePlayKeySignatures)endBeat=qMax(endBeat,signature.beat);for(double repeat:m_freePlayRepeatEnds)endBeat=qMax(endBeat,repeat);for(const auto &pedal:m_freePlayPedals)endBeat=qMax(endBeat,pedal.beat);
     liveBeat=qBound(0.0,liveBeat,endBeat);const int maximum=qMax(0,qCeil(endBeat*8.0));const bool follow=forceFollow||m_freePlayAutoFollow;const int oldValue=m_scoreHistoryBar->value();const int value=follow?qBound(0,qRound(liveBeat*8.0),maximum):qMin(oldValue,maximum);
     {const QSignalBlocker blocker(m_scoreHistoryBar);m_scoreHistoryBar->setRange(0,maximum);m_scoreHistoryBar->setPageStep(32);m_scoreHistoryBar->setValue(value);m_scoreHistoryBar->setEnabled(maximum>0);}
     // Preview playback follows the orange play line, not the end of the
@@ -2038,7 +2317,7 @@ void MainWindow::refreshFreePlayStaff(){
     m_freePlayGroupEntry=false;m_freePlayEditAdvance=0;m_freePlayPressMs.clear();m_freePlayEditPressMs.clear();
     double endBeat=0,focusBeat=-1;for(const auto &event:m_freePlayNotes){endBeat=qMax(endBeat,event.start+event.duration);focusBeat=qMax(focusBeat,event.start);}for(const auto &rest:m_freePlayRests)endBeat=qMax(endBeat,rest.beat+rest.duration);
     m_freePlayStarts.clear();m_freePlayIndexes.clear();m_freePlayOffsetBeat=m_freePlayNotes.isEmpty()?0:endBeat+.5;if(m_freePlayNotes.isEmpty()&&m_freePlayRests.isEmpty())m_freePlayClock.invalidate();else m_freePlayClock.restart();
-    m_score->setNotes(m_freePlayNotes);m_score->setTimeSignatures(m_freePlayTimeSignatures);m_score->setKeySignatures(m_freePlayKeySignatures);m_score->setRests(m_freePlayRests);m_score->setRepeatEnds(m_freePlayRepeatEnds);m_score->setExpected({},0);m_score->setPlayedBeat(focusBeat);
+    m_score->setNotes(m_freePlayNotes);m_score->setTimeSignatures(m_freePlayTimeSignatures);m_score->setKeySignatures(m_freePlayKeySignatures);m_score->setRests(m_freePlayRests);m_score->setRepeatEnds(m_freePlayRepeatEnds);m_score->setPedalEvents(m_freePlayPedals);m_score->setExpected({},0);m_score->setPlayedBeat(focusBeat);
     m_bubble->setNotes(m_freePlayNotes);m_bubble->setExpected({},0);m_bubble->setPlayhead(qMax(0.0,focusBeat));
     const int seconds=qRound(endBeat*60.0/qMax(1,m_tempo));m_noteCountLabel->setText(QString("%1 note%2").arg(m_freePlayNotes.size()).arg(m_freePlayNotes.size()==1?"":"s"));m_durationLabel->setText(QString("%1:%2").arg(seconds/60).arg(seconds%60,2,10,QChar('0')));
     updateFreePlayHistory(true);m_barLabel->setText(m_freePlayNotes.isEmpty()?"FREE PLAY   ·   Empty grand staff":QString("FREE PLAY   ·   Edited staff · %1 notes").arg(m_freePlayNotes.size()));m_liveNoteLabel->setText("Ready");
@@ -2054,9 +2333,9 @@ void MainWindow::clearFreePlayStaff(){
     if(m_recording){showNotice("Stop the Free Play recording before clearing the staff.",true);return;}
     if(!m_freePlayStarts.isEmpty()){toast("Release the held keys before clearing the staff");return;}
     const bool defaultMeter=m_freePlayTimeSignatures.size()==1&&m_freePlayTimeSignatures.first().beats==4&&m_freePlayTimeSignatures.first().beatType==4;const bool defaultKey=m_freePlayKeySignatures.size()==1&&m_freePlayKeySignatures.first().fifths==0;
-    if(m_freePlayNotes.isEmpty()&&m_freePlayRests.isEmpty()&&m_freePlayRepeatEnds.isEmpty()&&defaultMeter&&defaultKey){toast("The Free Play staff is already empty");return;}
-    if(QMessageBox::question(this,"Clear Free Play staff","Remove every note, rest, meter change, key signature, and repeat mark from the Free Play grand staff?",QMessageBox::Yes|QMessageBox::No,QMessageBox::No)!=QMessageBox::Yes)return;
-    m_freePlayNotes.clear();m_freePlayRests.clear();m_freePlayRepeatEnds.clear();m_freePlayTimeSignatures={{0.0,4,4}};m_freePlayKeySignatures={{0.0,0}};m_freePlayGroupEntry=false;m_freePlayEditBeat=-1;m_freePlayEditAdvance=0;m_score->setEditCursorBeat(-1);m_score->setTimeSignatures(m_freePlayTimeSignatures);m_score->setKeySignatures(m_freePlayKeySignatures);m_score->setRests({});m_score->setRepeatEnds({});if(m_freePlayApplied)m_notes.clear();refreshFreePlayStaff();toast("Free Play grand staff cleared");
+    if(m_freePlayNotes.isEmpty()&&m_freePlayRests.isEmpty()&&m_freePlayRepeatEnds.isEmpty()&&m_freePlayPedals.isEmpty()&&defaultMeter&&defaultKey){toast("The Free Play staff is already empty");return;}
+    if(QMessageBox::question(this,"Clear Free Play staff","Remove every note, rest, meter change, key signature, repeat mark, and pedal mark from the Free Play grand staff?",QMessageBox::Yes|QMessageBox::No,QMessageBox::No)!=QMessageBox::Yes)return;
+    m_freePlayNotes.clear();m_freePlayRests.clear();m_freePlayRepeatEnds.clear();m_freePlayPedals.clear();m_freePlayTimeSignatures={{0.0,4,4}};m_freePlayKeySignatures={{0.0,0}};m_freePlayGroupEntry=false;m_freePlayEditBeat=-1;m_freePlayEditAdvance=0;m_score->setEditCursorBeat(-1);m_score->setTimeSignatures(m_freePlayTimeSignatures);m_score->setKeySignatures(m_freePlayKeySignatures);m_score->setRests({});m_score->setRepeatEnds({});m_score->setPedalEvents({});if(m_freePlayApplied)m_notes.clear();refreshFreePlayStaff();toast("Free Play grand staff cleared");
 }
 
 void MainWindow::editFreePlayStaff(){
@@ -2179,12 +2458,13 @@ void MainWindow::openScore(const QString &path) {
         QVector<double> repeats;
         QVector<KeySignatureEvent> keys;
         QVector<StaffRestEvent> rests;
+        QVector<PedalEvent> pedals;
         QString title;
         int tempo = m_tempo;
         QString importError;
         if (MusicDocument::importFile(project, notes, title, tempo,
                                       &importError, &meters, &repeats, &keys,
-                                      &rests)) {
+                                      &rests, &pedals)) {
           setSong(title, notes, tempo);
           const QString embeddedSuffix =
               QFileInfo(embeddedName).suffix().toLower();
@@ -2202,6 +2482,7 @@ void MainWindow::openScore(const QString &path) {
                 keys.isEmpty() ? QVector<KeySignatureEvent>{{0.0, 0}} : keys;
             m_freePlayRepeatEnds = repeats;
             m_freePlayRests = rests;
+            m_freePlayPedals = pedals;
             m_freePlayApplied = true;
             refreshFreePlayStaff();
           }
@@ -2414,11 +2695,12 @@ void MainWindow::openScore(const QString &path) {
   QVector<double> repeats;
   QVector<KeySignatureEvent> keys;
   QVector<StaffRestEvent> rests;
+  QVector<PedalEvent> pedals;
   QString title;
   int tempo = m_tempo;
   QString error;
   if (!MusicDocument::importFile(path, notes, title, tempo, &error, &meters,
-                                 &repeats, &keys, &rests)) {
+                                 &repeats, &keys, &rests, &pedals)) {
     QMessageBox::warning(this, "Could not import score", error);
     return;
   }
@@ -2435,6 +2717,7 @@ void MainWindow::openScore(const QString &path) {
         keys.isEmpty() ? QVector<KeySignatureEvent>{{0.0, 0}} : keys;
     m_freePlayRepeatEnds = repeats;
     m_freePlayRests = rests;
+    m_freePlayPedals = pedals;
     m_freePlayApplied = true;
     refreshFreePlayStaff();
     m_barLabel->setText("FREE PLAY   ·   Editable project loaded");
@@ -2470,18 +2753,18 @@ void MainWindow::openScore(const QString &path) {
 void MainWindow::exportScore(){const auto &notes=m_mode==Mode::Free?m_freePlayNotes:m_notes;if(notes.isEmpty()&&!(m_mode==Mode::Free&&!m_freePlayRests.isEmpty())){QMessageBox::information(this,"Nothing to save",m_mode==Mode::Free?"The Free Play grand staff is empty. Play a note or insert a rest first.":"Play a recording or import a note-aware score first.");return;}const QString exportTitle=m_mode==Mode::Free&&!m_freePlayApplied?"Free Play score":m_title;QString type=m_exportCombo->currentData().toString();QMap<QString,QString>ext{{"mid","mid"},{"musicxml","musicxml"},{"abc","abc"},{"wav","wav"},{"video","mp4"},{"svg","svg"},{"png","png"},{"pdf","pdf"},{"json","varpeggio"},{"csv","csv"}};QSettings settings("Voncloft","VArpeggio");const QString start=settings.value("dialogs/exportFolder",QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)).toString()+"/"+safeName(exportTitle)+"."+ext[type];QString path=QFileDialog::getSaveFileName(this,"Save "+m_exportCombo->currentText(),start);if(path.isEmpty())return;if(QFileInfo(path).suffix().isEmpty())path+="."+ext[type];settings.setValue("dialogs/exportFolder",QFileInfo(path).absolutePath());exportTo(type,path);}
 void MainWindow::exportTo(const QString &type,const QString &path){
     const auto &notes=m_mode==Mode::Free?m_freePlayNotes:m_notes;const QString title=m_mode==Mode::Free&&!m_freePlayApplied?"Free Play score":m_title;
-    const QVector<TimeSignatureEvent> meters=m_mode==Mode::Free?m_freePlayTimeSignatures:QVector<TimeSignatureEvent>{};const QVector<double> repeats=m_mode==Mode::Free?m_freePlayRepeatEnds:QVector<double>{};const QVector<KeySignatureEvent> keys=m_mode==Mode::Free?m_freePlayKeySignatures:QVector<KeySignatureEvent>{};const QVector<StaffRestEvent> rests=m_mode==Mode::Free?m_freePlayRests:QVector<StaffRestEvent>{};
+    const QVector<TimeSignatureEvent> meters=m_mode==Mode::Free?m_freePlayTimeSignatures:QVector<TimeSignatureEvent>{};const QVector<double> repeats=m_mode==Mode::Free?m_freePlayRepeatEnds:QVector<double>{};const QVector<KeySignatureEvent> keys=m_mode==Mode::Free?m_freePlayKeySignatures:QVector<KeySignatureEvent>{};const QVector<StaffRestEvent> rests=m_mode==Mode::Free?m_freePlayRests:QVector<StaffRestEvent>{};const QVector<PedalEvent> pedals=m_mode==Mode::Free?m_freePlayPedals:QVector<PedalEvent>{};
     QString error;bool ok=false;
-    if(type=="mid")ok=MusicDocument::saveMidi(path,notes,m_tempo,&error);
-    else if(type=="musicxml")ok=MusicDocument::saveEngravedScore(path,{},notes,m_tempo,title,&error,meters,repeats,keys,rests);
+    if(type=="mid")ok=MusicDocument::saveMidi(path,notes,m_tempo,&error,pedals);
+    else if(type=="musicxml")ok=MusicDocument::saveEngravedScore(path,{},notes,m_tempo,title,&error,meters,repeats,keys,rests,pedals);
     else if(type=="abc")ok=MusicDocument::saveAbc(path,notes,m_tempo,title,&error);
     else if(type=="wav")ok=Synthesizer::saveWav(path,notes,m_tempo,&error,SynthInstrument(m_instrumentCombo->currentData().toInt()));
     else if(type=="video")ok=saveFallingNoteVideo(path,notes,m_tempo,title,SynthInstrument(m_instrumentCombo->currentData().toInt()),this,&error);
-    else if(type=="json")ok=MusicDocument::saveJson(path,notes,m_tempo,title,&error,meters,repeats,keys,rests);
+    else if(type=="json")ok=MusicDocument::saveJson(path,notes,m_tempo,title,&error,meters,repeats,keys,rests,pedals);
     else if(type=="csv")ok=MusicDocument::saveCsv(path,notes,&error);
     else if(type=="png"){QImage image(2200,500,QImage::Format_ARGB32_Premultiplied);image.fill(Qt::white);QPainter p(&image);m_score->paintScore(p,image.rect());p.end();ok=image.save(path);if(!ok)error="Could not encode the PNG image.";}
     else if(type=="svg"){QSvgGenerator gen;gen.setFileName(path);gen.setSize({2200,500});gen.setViewBox(QRect(0,0,2200,500));gen.setTitle(title);QPainter p(&gen);m_score->paintScore(p,QRectF(0,0,2200,500));p.end();ok=true;}
-    else if(type=="pdf"){QTemporaryDir temp;if(temp.isValid())ok=MusicDocument::saveEngravedScore(temp.filePath("score.musicxml"),path,notes,m_tempo,title,&error,meters,repeats,keys,rests);else error="Could not create the score workspace.";}
+    else if(type=="pdf"){QTemporaryDir temp;if(temp.isValid())ok=MusicDocument::saveEngravedScore(temp.filePath("score.musicxml"),path,notes,m_tempo,title,&error,meters,repeats,keys,rests,pedals);else error="Could not create the score workspace.";}
     if(ok)toast("Saved "+QFileInfo(path).fileName());else QMessageBox::warning(this,"Could not save",error);
 }
 
@@ -2662,6 +2945,79 @@ bool MainWindow::transcribeMediaPath(const QString &path,TranscriptionMode mode,
     }
     return true;
 }
+void MainWindow::openChordPractice(){
+    QDialog dialog(this);dialog.setObjectName("chordPracticeDialog");dialog.setWindowTitle("Chord practice");dialog.setMinimumSize(760,620);dialog.resize(800,640);dialog.setModal(true);
+    QPalette chordPalette=dialog.palette();chordPalette.setColor(QPalette::Window,QColor("#f5f1e8"));chordPalette.setColor(QPalette::WindowText,QColor("#18312d"));chordPalette.setColor(QPalette::Base,QColor("#fffefa"));chordPalette.setColor(QPalette::AlternateBase,QColor("#eef7f4"));chordPalette.setColor(QPalette::Text,QColor("#18312d"));chordPalette.setColor(QPalette::Button,QColor("#fffefa"));chordPalette.setColor(QPalette::ButtonText,QColor("#18312d"));chordPalette.setColor(QPalette::Highlight,QColor("#2d7d70"));chordPalette.setColor(QPalette::HighlightedText,Qt::white);dialog.setPalette(chordPalette);dialog.setAutoFillBackground(true);
+    dialog.setStyleSheet(R"(
+QDialog#chordPracticeDialog{background:#f5f1e8;color:#18312d}
+QDialog#chordPracticeDialog QLabel{color:#18312d;background:transparent}
+QDialog#chordPracticeDialog QComboBox,QDialog#chordPracticeDialog QSpinBox{color:#18312d;background:#fffefa;border:1px solid #b8b4aa;border-radius:7px;padding:8px 12px;min-height:28px}
+QDialog#chordPracticeDialog QComboBox:hover,QDialog#chordPracticeDialog QSpinBox:hover{border-color:#2d7d70}
+QDialog#chordPracticeDialog QComboBox QAbstractItemView{color:#18312d;background:#fffefa;border:1px solid #9fb7b0;selection-color:white;selection-background-color:#2d7d70;outline:0;padding:4px}
+QDialog#chordPracticeDialog QDialogButtonBox QPushButton{color:#18312d;background:#fffefa;border:1px solid #b8b4aa;border-radius:7px;padding:8px 14px;min-width:110px}
+QDialog#chordPracticeDialog QDialogButtonBox QPushButton#chordStartButton{min-width:210px}
+QDialog#chordPracticeDialog QDialogButtonBox QPushButton#chordCancelButton{min-width:130px}
+QDialog#chordPracticeDialog QDialogButtonBox QPushButton:default{color:white;background:#2d7d70;border-color:#205e54;font-weight:800}
+QDialog#chordPracticeDialog QDialogButtonBox QPushButton:hover{color:white;background:#256b61;border-color:#205e54}
+)");
+    auto *layout=new QVBoxLayout(&dialog);layout->setContentsMargins(30,26,30,24);layout->setSpacing(18);
+    auto *heading=label("Practice any chord","dialogHeading");heading->setStyleSheet("font-size:22px;font-weight:800");layout->addWidget(heading);
+    auto *intro=label("Choose any root, practical chord family, inversion, and hand. Perfect 5th is included both as an interval and as the two-note power chord.");intro->setWordWrap(true);intro->setSizePolicy(QSizePolicy::Preferred,QSizePolicy::Minimum);layout->addWidget(intro);
+    auto *form=new QFormLayout;form->setContentsMargins(0,4,0,4);form->setHorizontalSpacing(24);form->setVerticalSpacing(14);form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);form->setRowWrapPolicy(QFormLayout::DontWrapRows);form->setLabelAlignment(Qt::AlignLeft|Qt::AlignVCenter);form->setFormAlignment(Qt::AlignTop);
+    auto *root=new QComboBox;const QStringList roots{"C","C♯ / D♭","D","D♯ / E♭","E","F","F♯ / G♭","G","G♯ / A♭","A","A♯ / B♭","B"};root->addItems(roots);form->addRow("Root",root);
+    struct ChordChoice{QString name;QString intervals;};
+    const QVector<ChordChoice> choices{
+        {"Perfect 5th / power chord (5)","0,7"},{"Major","0,4,7"},{"Minor","0,3,7"},
+        {"Diminished","0,3,6"},{"Augmented","0,4,8"},{"Suspended 2 (sus2)","0,2,7"},
+        {"Suspended 4 (sus4)","0,5,7"},{"Major 6","0,4,7,9"},{"Minor 6","0,3,7,9"},
+        {"Dominant 7","0,4,7,10"},{"Major 7","0,4,7,11"},{"Minor 7","0,3,7,10"},
+        {"Minor-major 7","0,3,7,11"},{"Diminished 7","0,3,6,9"},{"Half-diminished 7","0,3,6,10"},
+        {"Add 9","0,4,7,14"},{"Minor add 9","0,3,7,14"},{"6/9","0,4,7,9,14"},
+        {"Dominant 9","0,4,7,10,14"},{"Major 9","0,4,7,11,14"},{"Minor 9","0,3,7,10,14"},
+        {"Dominant 11","0,4,7,10,14,17"},{"Dominant 13","0,4,7,10,14,17,21"}
+    };
+    auto *quality=new QComboBox;for(const auto &choice:choices)quality->addItem(choice.name,choice.intervals);form->addRow("Chord / interval",quality);
+    auto *inversion=new QComboBox;form->addRow("Position",inversion);
+    auto refreshInversions=[quality,inversion]{
+        const int tones=quality->currentData().toString().split(',',Qt::SkipEmptyParts).size();
+        const int previous=inversion->currentIndex();inversion->clear();inversion->addItem("Root position",0);
+        const QStringList ordinal{"First inversion","Second inversion","Third inversion","Fourth inversion","Fifth inversion","Sixth inversion"};
+        for(int index=1;index<tones;++index)inversion->addItem(index-1<ordinal.size()?ordinal[index-1]:QString("Inversion %1").arg(index),index);
+        inversion->setCurrentIndex(qBound(0,previous,inversion->count()-1));
+    };
+    refreshInversions();connect(quality,qOverload<int>(&QComboBox::currentIndexChanged),&dialog,[refreshInversions](int){refreshInversions();});
+    auto *hand=new QComboBox;hand->addItem("Both hands",2);hand->addItem("Right hand",1);hand->addItem("Left hand",0);form->addRow("Hands",hand);
+    auto *pattern=new QComboBox;pattern->addItem("Block chord — together",0);pattern->addItem("Broken chord — rising",1);pattern->addItem("Broken chord — up and down",2);form->addRow("Pattern",pattern);
+    auto *tempo=new QSpinBox;tempo->setRange(30,200);tempo->setValue(qBound(30,m_tempo,200));tempo->setSuffix(" BPM");form->addRow("Tempo",tempo);
+    for(QWidget *field:{static_cast<QWidget*>(root),static_cast<QWidget*>(quality),static_cast<QWidget*>(inversion),static_cast<QWidget*>(hand),static_cast<QWidget*>(pattern),static_cast<QWidget*>(tempo)}){field->setMinimumHeight(44);field->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Fixed);if(auto *fieldLabel=qobject_cast<QLabel*>(form->labelForField(field))){fieldLabel->setMinimumWidth(130);fieldLabel->setAlignment(Qt::AlignLeft|Qt::AlignVCenter);fieldLabel->setStyleSheet("font-weight:600");}}
+    layout->addLayout(form);
+    auto *note=label("The exercise repeats automatically in Wait mode. Every repeated attack requires releasing and playing the chord again.");note->setWordWrap(true);note->setStyleSheet("color:#526862;padding:6px 0");note->setSizePolicy(QSizePolicy::Preferred,QSizePolicy::Minimum);layout->addWidget(note);
+    layout->addStretch();
+    auto *buttons=new QDialogButtonBox(QDialogButtonBox::Cancel);auto *start=buttons->addButton("Start chord practice",QDialogButtonBox::AcceptRole);start->setObjectName("chordStartButton");start->setDefault(true);start->setMinimumWidth(210);start->setMinimumHeight(40);if(auto *cancel=buttons->button(QDialogButtonBox::Cancel)){cancel->setObjectName("chordCancelButton");cancel->setMinimumWidth(130);cancel->setMinimumHeight(40);}layout->addWidget(buttons);
+    connect(buttons,&QDialogButtonBox::accepted,&dialog,&QDialog::accept);connect(buttons,&QDialogButtonBox::rejected,&dialog,&QDialog::reject);
+    if(dialog.exec()!=QDialog::Accepted)return;
+    QVector<int> intervals;for(const QString &value:quality->currentData().toString().split(',',Qt::SkipEmptyParts))intervals.append(value.toInt());
+    const int inversionIndex=inversion->currentData().toInt();for(int index=0;index<inversionIndex&&index<intervals.size();++index)intervals[index]+=12;std::sort(intervals.begin(),intervals.end());
+    const int rootPitch=root->currentIndex();const int selectedHand=hand->currentData().toInt();const int selectedPattern=pattern->currentData().toInt();QVector<NoteEvent> exercise;
+    auto appendTone=[&](int midi,double beat,double duration,Hand noteHand){exercise.append({qBound(21,midi,108),beat,duration,100,noteHand});};
+    for(int repetition=0;repetition<8;++repetition){
+        const double baseBeat=repetition*4.0;
+        for(Hand noteHand:{Hand::Left,Hand::Right}){
+            if((noteHand==Hand::Left&&selectedHand==1)||(noteHand==Hand::Right&&selectedHand==0))continue;
+            const int base=(noteHand==Hand::Left?48:60)+rootPitch;
+            if(selectedPattern==0){for(int interval:intervals)appendTone(base+interval,baseBeat,2.0,noteHand);}
+            else{
+                QVector<int> sequence=intervals;if(selectedPattern==2&&intervals.size()>1)for(int index=intervals.size()-2;index>0;--index)sequence.append(intervals[index]);
+                const double step=qMax(.25,2.0/qMax(1,sequence.size()));
+                for(int index=0;index<sequence.size();++index)appendTone(base+sequence[index],baseBeat+index*step,qMax(.22,step*.82),noteHand);
+            }
+        }
+    }
+    std::sort(exercise.begin(),exercise.end(),[](const auto&a,const auto&b){return qAbs(a.start-b.start)<.001?a.note<b.note:a.start<b.start;});
+    setSong(roots[rootPitch]+" "+quality->currentText()+" — chord practice",exercise,tempo->value());setMode(Mode::Wait);
+    showNotice("Chord practice loaded. Play the highlighted chord or interval, release it, and repeat. The exercise loops so you can keep trying.");
+}
+
 void MainWindow::openRoutineDialog(){
     const QDate today=QDate::currentDate();QDate viewedDate=today;int viewedVariation=dailyRoutineTheme(viewedDate).chordOrder;
     QDialog d(this);d.setWindowTitle("Daily practice plan");d.setMinimumWidth(620);d.setModal(true);
@@ -2732,4 +3088,4 @@ void MainWindow::toast(const QString&text){statusBar()->show();statusBar()->show
 
 void MainWindow::keyPressEvent(QKeyEvent*e){if(e->isAutoRepeat()){e->accept();return;}if(m_keyMap.contains(e->key())&&!qobject_cast<QLineEdit*>(focusWidget())){userNoteOn(m_keyMap[e->key()],100);e->accept();return;}if(e->key()==Qt::Key_Space&&!qobject_cast<QLineEdit*>(focusWidget())){togglePlayback();e->accept();return;}if(e->key()==Qt::Key_R&&!qobject_cast<QLineEdit*>(focusWidget())){toggleRecord();e->accept();return;}if(e->key()==Qt::Key_Escape){stopPlayback(false);if(m_recording)finishRecording();m_synth.allOff();e->accept();return;}QMainWindow::keyPressEvent(e);}
 void MainWindow::keyReleaseEvent(QKeyEvent*e){if(e->isAutoRepeat()){e->accept();return;}if(m_keyMap.contains(e->key())){userNoteOff(m_keyMap[e->key()]);e->accept();return;}QMainWindow::keyReleaseEvent(e);}
-void MainWindow::closeEvent(QCloseEvent*e){if(m_recording){auto r=QMessageBox::question(this,"Recording in progress","Stop recording and close VArpeggio?");if(r!=QMessageBox::Yes){e->ignore();return;}finishRecording();}m_sourcePlayer->stop();m_midi.stop();m_midiOutput.allNotesOff();m_midiOutput.close();m_synth.allOff();e->accept();}
+void MainWindow::closeEvent(QCloseEvent*e){if(m_recording){auto r=QMessageBox::question(this,"Recording in progress","Stop recording and close VArpeggio?");if(r!=QMessageBox::Yes){e->ignore();return;}finishRecording();}QSettings settings("Voncloft","VArpeggio");settings.setValue("ui/mainWindowGeometry",saveGeometry());settings.setValue("ui/mainWindowState",saveState());settings.setValue("ui/mainWindowMaximized",isMaximized());if(m_midiOutputCheck&&m_midiOutputCheck->isChecked())settings.setValue("midi/useOutput",true);settings.sync();m_sourcePlayer->stop();m_midi.stop();m_midiOutput.allNotesOff();m_midiOutput.close();m_synth.allOff();e->accept();}

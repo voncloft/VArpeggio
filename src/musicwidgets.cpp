@@ -70,12 +70,13 @@ void ScoreWidget::setKeySignatures(const QVector<KeySignatureEvent>&signatures){
 QString ScoreWidget::noteNameForBeat(int midi,double beat,AccidentalMark accidental)const{return MusicDocument::spelledNoteName(midi,fifthsAt(m_keySignatures,beat),accidental);}
 void ScoreWidget::setRests(const QVector<StaffRestEvent>&rests){m_rests=rests;std::sort(m_rests.begin(),m_rests.end(),[](const auto&a,const auto&b){return a.beat<b.beat;});update();}
 void ScoreWidget::setRepeatEnds(const QVector<double>&beats){m_repeatEnds=beats;std::sort(m_repeatEnds.begin(),m_repeatEnds.end());update();}
+void ScoreWidget::setPedalEvents(const QVector<PedalEvent>&events){m_pedalEvents=events;std::sort(m_pedalEvents.begin(),m_pedalEvents.end(),[](const auto&a,const auto&b){return a.beat<b.beat;});update();}
 void ScoreWidget::setShowNames(bool s){m_showNames=s;update();}
 void ScoreWidget::setHandFilter(int f){m_handFilter=f;update();}
 void ScoreWidget::paintEvent(QPaintEvent*){QPainter p(this);paintScore(p,rect());}
 
 QPair<double,double> ScoreWidget::viewRange() const {
-    double maxBeat=0;for(const auto &note:m_notes)if(included(note,m_handFilter))maxBeat=qMax(maxBeat,note.start+note.duration);for(const auto &rest:m_rests)if(m_handFilter<0||(m_handFilter==0&&rest.hand==Hand::Left)||(m_handFilter==1&&rest.hand==Hand::Right))maxBeat=qMax(maxBeat,rest.beat+rest.duration);for(const auto &signature:m_timeSignatures)maxBeat=qMax(maxBeat,signature.beat);for(const auto &signature:m_keySignatures)maxBeat=qMax(maxBeat,signature.beat);for(double beat:m_repeatEnds)maxBeat=qMax(maxBeat,beat);
+    double maxBeat=0;for(const auto &note:m_notes)if(included(note,m_handFilter))maxBeat=qMax(maxBeat,note.start+note.duration);for(const auto &rest:m_rests)if(m_handFilter<0||(m_handFilter==0&&rest.hand==Hand::Left)||(m_handFilter==1&&rest.hand==Hand::Right))maxBeat=qMax(maxBeat,rest.beat+rest.duration);for(const auto &signature:m_timeSignatures)maxBeat=qMax(maxBeat,signature.beat);for(const auto &signature:m_keySignatures)maxBeat=qMax(maxBeat,signature.beat);for(double beat:m_repeatEnds)maxBeat=qMax(maxBeat,beat);for(const auto &pedal:m_pedalEvents)maxBeat=qMax(maxBeat,pedal.beat);
     const double requestedFollow=m_seekDragging&&m_seekPreviewBeat>=0?m_seekPreviewBeat:m_followBeat;
     const double followed=m_liveWriting?qMax(0.0,requestedFollow):qBound(0.0,requestedFollow,maxBeat);
     double startBeat=0,window=6.0;
@@ -209,6 +210,19 @@ void ScoreWidget::paintScore(QPainter &p,const QRectF &target) const {
         const double x=musicLeft+(rest.beat-startBeat)*scale,y=(rest.hand==Hand::Right?90.0:180.0)+verticalOffset;
         const QString symbol=rest.duration>=3.5?QString::fromUtf8("𝄻"):rest.duration>=1.75?QString::fromUtf8("𝄼"):rest.duration>=.75?QString::fromUtf8("𝄽"):QString::fromUtf8("𝄾");
         p.setPen(QColor("#263f39"));p.setFont(QFont("Noto Music",27));p.drawText(QRectF(x-15,y-22,30,44),Qt::AlignCenter,symbol);
+    }
+    // Sustain is performance notation, not a longer written note. Mark each
+    // CC64 press with Ped. and its release with *; keep the area between them
+    // open so the notation remains uncluttered at large display sizes.
+    for(int index=0;index<m_pedalEvents.size();++index){
+        const auto &event=m_pedalEvents[index];if(!event.down)continue;
+        double release=startBeat+window;bool released=false;
+        for(int next=index+1;next<m_pedalEvents.size();++next)if(!m_pedalEvents[next].down){release=m_pedalEvents[next].beat;released=true;break;}
+        if(release<startBeat-.001||event.beat>startBeat+window+.001)continue;
+        const double x1=musicLeft+(event.beat-startBeat)*scale,x2=musicLeft+(release-startBeat)*scale,y=286.0+verticalOffset;
+        p.setPen(QColor("#29433d"));
+        if(event.beat>=startBeat-.001){p.setFont(QFont("Noto Serif",13,QFont::Bold));p.drawText(QPointF(x1,y),"Ped.");}
+        if(released&&release<=startBeat+window+.001){p.setFont(QFont("Noto Serif",16,QFont::Bold));p.drawText(QPointF(x2-3,y+2),"*");}
     }
     if(followed>=startBeat&&followed<=startBeat+window){const double playX=musicLeft+(followed-startBeat)*scale;p.fillRect(QRectF(playX-2,8,4,canvasHeight-16),QColor(239,119,95,70));p.setPen(QColor("#bd5945"));p.drawLine(QPointF(playX,8),QPointF(playX,canvasHeight-8));}
     if(m_editEnabled&&m_editCursorBeat>=startBeat&&m_editCursorBeat<=startBeat+window){

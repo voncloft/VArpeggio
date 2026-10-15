@@ -84,7 +84,10 @@ int main(int argc, char **argv) {
     ok &= check(leftHandIsCMajor,"C-major contrary-motion left hand uses natural C-major notes");
 
     const QString midi = temp.filePath("roundtrip.mid");
-    ok &= check(MusicDocument::saveMidi(midi, source, tempo, &error), "write MIDI");
+    const QVector<PedalEvent> sourcePedals{{.25,true},{2.75,false}};
+    ok &= check(MusicDocument::saveMidi(midi, source, tempo, &error, sourcePedals), "write MIDI");
+    QFile midiFile(midi);midiFile.open(QIODevice::ReadOnly);const QByteArray midiBytes=midiFile.readAll();
+    ok &= check(midiBytes.contains(QByteArray{"\xb0\x40\x7f",3})&&midiBytes.contains(QByteArray{"\xb0\x40\x00",3}),"MIDI preserves sustain-pedal CC64 down and release");
     QVector<NoteEvent> loaded;
     ok &= check(MusicDocument::importFile(midi, loaded, title, tempo, &error), "read MIDI");
     ok &= check(loaded.size() == source.size(), "MIDI preserves note count");
@@ -138,13 +141,13 @@ int main(int argc, char **argv) {
     ok &= check(loaded.size() == source.size() && title == "Chord drill" && tempo == 72, "project metadata round trip");
 
     const QString annotatedProject=temp.filePath("annotated.varpeggio");QVector<NoteEvent> annotated=source;if(!annotated.isEmpty())annotated[0].accidental=AccidentalMark::Natural;
-    ok &= check(MusicDocument::saveJson(annotatedProject,annotated,72,"Annotated",&error,{{0,3,4},{3,4,4}},{3},{{0,-1}},{{2,1,Hand::Left}}),"write editable notation metadata");
+    ok &= check(MusicDocument::saveJson(annotatedProject,annotated,72,"Annotated",&error,{{0,3,4},{3,4,4}},{3},{{0,-1}},{{2,1,Hand::Left}},sourcePedals),"write editable notation metadata");
     QFile annotatedFile(annotatedProject);annotatedFile.open(QIODevice::ReadOnly);const QJsonObject annotatedJson=QJsonDocument::fromJson(annotatedFile.readAll()).object();
-    ok &= check(annotatedJson.value("timeSignatures").toArray().size()==2&&annotatedJson.value("keySignatures").toArray().size()==1&&annotatedJson.value("repeatEnds").toArray().size()==1&&annotatedJson.value("rests").toArray().size()==1,"project preserves meter, key, repeat, and rest data");
+    ok &= check(annotatedJson.value("timeSignatures").toArray().size()==2&&annotatedJson.value("keySignatures").toArray().size()==1&&annotatedJson.value("repeatEnds").toArray().size()==1&&annotatedJson.value("rests").toArray().size()==1&&annotatedJson.value("pedalEvents").toArray().size()==2,"project preserves meter, key, repeat, rest, and pedal data");
     ok &= check(annotatedJson.value("notes").toArray().first().toObject().value("accidental").toInt()==int(AccidentalMark::Natural),"project preserves note accidental");
-    QVector<TimeSignatureEvent> loadedMeters;QVector<double> loadedRepeats;QVector<KeySignatureEvent> loadedKeys;QVector<StaffRestEvent> loadedRests;loaded.clear();
-    ok &= check(MusicDocument::importFile(annotatedProject,loaded,title,tempo,&error,&loadedMeters,&loadedRepeats,&loadedKeys,&loadedRests),"reopen editable notation project");
-    ok &= check(loadedMeters.size()==2&&loadedKeys.size()==1&&loadedRepeats.size()==1&&loadedRests.size()==1&&loaded.first().accidental==AccidentalMark::Natural,"editable notation metadata round trip");
+    QVector<TimeSignatureEvent> loadedMeters;QVector<double> loadedRepeats;QVector<KeySignatureEvent> loadedKeys;QVector<StaffRestEvent> loadedRests;QVector<PedalEvent> loadedPedals;loaded.clear();
+    ok &= check(MusicDocument::importFile(annotatedProject,loaded,title,tempo,&error,&loadedMeters,&loadedRepeats,&loadedKeys,&loadedRests,&loadedPedals),"reopen editable notation project");
+    ok &= check(loadedMeters.size()==2&&loadedKeys.size()==1&&loadedRepeats.size()==1&&loadedRests.size()==1&&loadedPedals.size()==2&&loadedPedals.first().down&&!loadedPedals.last().down&&loaded.first().accidental==AccidentalMark::Natural,"editable notation metadata round trip");
 
     const QString pdfPath = temp.filePath("playable.pdf");
     QFile projectFile(project); projectFile.open(QIODevice::ReadOnly);

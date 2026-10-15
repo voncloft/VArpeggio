@@ -9,6 +9,7 @@ VArpeggio is a native Qt 6 piano practice, performance, recording, and notation 
 - **Play Along:** follows the score clock while showing the current notes, keyboard keys, and falling-note display.
 - **Free Play:** immediately displays played notes on the grand staff, full 88-key keyboard, and optional falling-note view. Recording is optional.
 - **Daily practice:** dated routines for scales, chords, separate hands, hands together, repertoire, and ear training, with previous/next navigation.
+- **Chord practice:** exercises every root with perfect fifths, triads, suspended chords, extended chords, inversions, separate or combined hands, and block or broken patterns.
 - **Ear training:** plays a hidden note or chord for the player to identify on a MIDI, computer, or onscreen keyboard.
 - **Full score display:** treble and bass staves, chords, beams, accidentals, rests, key and time signatures, repeats, ties, ledger lines, and MIDI pitches 21–108.
 - **MIDI input and output:** receives notes from ALSA MIDI keyboards and can send playback, tone selection, and volume messages to compatible hardware.
@@ -44,6 +45,7 @@ Every played key appears immediately. A held key grows from a short value into q
 - Right-click notes to delete them or change their duration or accidental treatment.
 - Right-click empty staff space to insert rests, change the time signature, change the key signature, or add or remove a repeat end.
 - Group mode allows notes entered separately to share one musical position as a chord.
+- Sustain-pedal presses are recorded independently from note length and displayed as `Ped.` and `*` release marks.
 - Use the Earlier–Latest scrollbar to revisit older measures.
 - **Preview score** plays the actual editable staff.
 - **Clear staff** removes the working score after confirmation.
@@ -82,11 +84,50 @@ Soundtrack-only polyphonic transcription remains experimental. Clean solo piano 
 - The orange play line can be dragged to seek in Wait, Listen, Play Along, and Free Play score preview.
 - The Earlier–Latest history bar and mouse wheel can review completed measures while playback continues; moving back to Latest restores live follow.
 - Playback supports pause, resume, and stop.
+- When Listen reaches the end, it returns to the beginning and remains stopped until Play is pressed again.
 - Live follow advances by measures and keeps the current measure readable instead of shrinking the entire piece onto one line.
 - Long notes remain visible as ties and held-note indicators for their complete sounding duration.
 - Right, Left, and Together filters support separate-hand practice.
 
+## Interface and remembered settings
+
+- The Grand Staff, combined Bubbles and Live Coach area, and Keyboard are independently collapsible. Their open or closed states are restored the next time VArpeggio starts.
+- Bubbles and Live Coach retain their original side-by-side layout inside one collapsible container, with the collapse control at the far-right edge of its header.
+- The left sidebar can be pinned open or kept as an icon-only rail that temporarily expands while hovered.
+- Window size, position, maximized state, app volume, sidebar state, and the **Use keyboard MIDI sound** selection are remembered between sessions.
+
 ## Changelog
+
+### 0.2.7 — 2026-10-15
+
+- Increased the internal sampled-piano sink safety buffer from 64 KiB to 96 KiB to prevent occasional PC-speaker underruns during desktop scheduling stalls.
+- Audio recovery now restarts from silence and fades the still-active piano voice back in, avoiding a second crack after an underrun.
+
+### 0.2.6 — 2026-10-15
+
+- Added a remembered icon-only/full-text switch for the left sidebar. The compact rail temporarily expands on hover, minimizes again when the pointer leaves, and uses a pushpin to stay open.
+- Added a comprehensive Chord Practice section covering all 12 roots, perfect fifth/power chords, common triads, suspended chords, sixths, sevenths, ninths, elevenths, thirteenths, inversions, separate or combined hands, and block or broken patterns.
+- Removed video transcription from the normal sidebar and placed it only under the top-level **Experimental → Video Notes** menu.
+- The volume slider now restores its last value when VArpeggio opens again.
+- Listen mode now returns the score and orange play line to the beginning when a song finishes, then remains stopped until Play is pressed again.
+- Bubbles and Live Coach retain their separate side-by-side cards inside one collapsible middle section, with its expand/collapse control at the far-right edge of the section header.
+- Chord Practice now uses an explicit high-contrast light palette for its fields, dropdown lists, tempo control, and complete unclipped action buttons, independent of the active KDE color scheme.
+- VArpeggio now restores its previous window size, position, and maximized state when reopened.
+- The **Use keyboard MIDI sound** selection is retained across exits and reconnects automatically when the saved keyboard adapter becomes available again.
+
+### 0.2.5 — 2026-10-15
+
+- Added remembered accordion controls for the complete Grand Staff box, the combined Bubbles and Live Coach section, and the complete Keyboard box. Each section independently reopens in its last expanded or collapsed state.
+
+### 0.2.4 — 2026-10-15
+
+- Free Play now records sustain-pedal down and release timing separately from key length and draws `Ped.` and `*` release marks below the grand staff.
+- VArpeggio project, MIDI, MusicXML, and engraved PDF saves now preserve recorded pedal events; reopening an editable project restores the pedal notation.
+
+### 0.2.3 — 2026-10-14
+
+- Free Play now remains cached for the entire VArpeggio session. Switching to Wait, Listen, or Play Along and returning restores its notes, rests, meter and key changes, repeat marks, grouping state, and insertion position.
+- The Free Play staff is cleared only by the explicit **Clear staff** action, not by changing modes.
 
 ### 0.2.2 — 2026-10-14
 

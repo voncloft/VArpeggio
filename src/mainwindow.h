@@ -110,6 +110,7 @@ private:
     void openDetectorView();
     bool transcribeMediaPath(const QString &path, TranscriptionMode mode, int tempo);
     void openRoutineDialog();
+    void openChordPractice();
     void loadRoutineStep(int step);
     void finishRoutinePlan();
     void restartCompletedPracticePass();
@@ -166,6 +167,7 @@ private:
     QVector<KeySignatureEvent> m_freePlayKeySignatures{{0.0,0}};
     QVector<StaffRestEvent> m_freePlayRests;
     QVector<double> m_freePlayRepeatEnds;
+    QVector<PedalEvent> m_freePlayPedals;
     QVector<NoteEvent> m_earPrompt;
     QMap<int,int> m_keyMap;
 

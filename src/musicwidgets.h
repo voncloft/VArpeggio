@@ -23,6 +23,7 @@ public:
     void setKeySignatures(const QVector<KeySignatureEvent> &signatures);
     void setRests(const QVector<StaffRestEvent> &rests);
     void setRepeatEnds(const QVector<double> &beats);
+    void setPedalEvents(const QVector<PedalEvent> &events);
     void setShowNames(bool show);
     void setHandFilter(int filter);
     void paintScore(QPainter &p, const QRectF &target) const;
@@ -54,6 +55,7 @@ private:
     QVector<KeySignatureEvent> m_keySignatures{{0.0,0}};
     QVector<StaffRestEvent> m_rests;
     QVector<double> m_repeatEnds;
+    QVector<PedalEvent> m_pedalEvents;
     QSet<int> m_expected;
     double m_groupStart = 0;
     double m_playedBeat = -1;
