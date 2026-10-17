@@ -15,6 +15,9 @@ struct NoteEvent {
     int velocity = 92;
     Hand hand = Hand::Right;
     AccidentalMark accidental = AccidentalMark::Automatic;
+    // Suggested piano finger (thumb 1 through little finger 5). Zero means
+    // that the source score does not provide a fingering recommendation.
+    int finger = 0;
 };
 
 struct TimeSignatureEvent {
@@ -80,7 +83,7 @@ public:
     static int inferKeySignature(const QVector<NoteEvent> &notes);
     static QVector<NoteEvent> morningLight();
     static QVector<NoteEvent> odeToJoy();
-    static QVector<NoteEvent> scaleRoutine();
+    static QVector<NoteEvent> scaleRoutine(int tonicSemitones = 0);
     static QVector<NoteEvent> chordRoutine(int variation = 0);
 
     static bool importFile(const QString &path, QVector<NoteEvent> &notes,

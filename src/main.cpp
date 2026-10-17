@@ -9,6 +9,7 @@
 #include <QIcon>
 #include <QImage>
 #include <QPainter>
+#include <QPushButton>
 #include <QTimer>
 
 static QIcon makeIcon() {
@@ -23,12 +24,13 @@ static QIcon makeIcon() {
 
 int main(int argc,char*argv[]){
     QApplication app(argc,argv);app.setApplicationName("VArpeggio");app.setApplicationDisplayName("VArpeggio");app.setOrganizationName("Voncloft");app.setOrganizationDomain("voncloft.com");app.setDesktopFileName("com.voncloft.VArpeggio");app.setWindowIcon(makeIcon());
-    const QStringList args=app.arguments();const int shot=args.indexOf("--screenshot");const int chordDialogShot=args.indexOf("--chord-dialog-screenshot");const int open=args.indexOf("--open");const int importVideo=args.indexOf("--import-video");
+    const QStringList args=app.arguments();const int shot=args.indexOf("--screenshot");const int chordDialogShot=args.indexOf("--chord-dialog-screenshot");const int routineDialogShot=args.indexOf("--routine-dialog-screenshot");const int open=args.indexOf("--open");const int importVideo=args.indexOf("--import-video");
+    const int testFontSize=args.indexOf("--test-font-size");if(testFontSize>=0&&testFontSize+1<args.size()){bool ok=false;const int points=args[testFontSize+1].toInt(&ok);if(ok){QFont font=app.font();font.setPointSize(qBound(8,points,32));app.setFont(font);}}
     const int transcribe=args.indexOf("--transcribe-falling");const int transcribeAudio=args.indexOf("--transcribe-audio");const int transcribePdf=args.indexOf("--transcribe-pdf");const int estimateTempo=args.indexOf("--estimate-tempo");const int renderWav=args.indexOf("--render-wav");const int renderVideo=args.indexOf("--render-video");const int renderDetector=args.indexOf("--render-detector");const int scoreShot=args.indexOf("--score-screenshot");
     if(scoreShot>=0&&scoreShot+2<args.size()){
         QVector<NoteEvent> notes;QVector<TimeSignatureEvent> meters;QVector<double> repeats;QVector<KeySignatureEvent> keys;QVector<StaffRestEvent> rests;QVector<PedalEvent> pedals;QString title,error;int tempo=96;
         if(!MusicDocument::importFile(args[scoreShot+1],notes,title,tempo,&error,&meters,&repeats,&keys,&rests,&pedals)){fprintf(stderr,"%s\n",error.toLocal8Bit().constData());return 2;}
-        ScoreWidget score;score.setNotes(notes);score.setTimeSignatures(meters);score.setKeySignatures(keys);score.setRests(rests);score.setRepeatEnds(repeats);score.setPedalEvents(pedals);score.resize(1100,440);
+        ScoreWidget score;score.setNotes(notes);score.setTimeSignatures(meters);score.setKeySignatures(keys);score.setRests(rests);score.setRepeatEnds(repeats);score.setPedalEvents(pedals);score.setShowNames(args.contains("--show-note-names"));score.setShowFingering(args.contains("--show-fingering"));score.resize(1100,440);
         if(scoreShot+3<args.size()){bool ok=false;const double beat=args[scoreShot+3].toDouble(&ok);if(ok)score.setFollowBeat(beat);}
         QImage image(1100,440,QImage::Format_ARGB32_Premultiplied);image.fill(Qt::transparent);QPainter painter(&image);score.paintScore(painter,QRectF(0,0,1100,440));painter.end();
         if(!image.save(args[scoreShot+2])){fprintf(stderr,"Could not save the live-score screenshot.\n");return 3;}
@@ -123,7 +125,7 @@ int main(int argc,char*argv[]){
         }
         fprintf(stderr,"Created %lld notes plus MIDI, detailed MusicXML, and playable PDF at %d BPM%s; audio agreement %.2f.\n",qint64(notes.size()),tempo,info.tempoEstimated?" (estimated)":"",info.audiovisualAgreement);return 0;
     }
-    if(shot>=0||chordDialogShot>=0)app.setQuitOnLastWindowClosed(false);
+    if(shot>=0||chordDialogShot>=0||routineDialogShot>=0)app.setQuitOnLastWindowClosed(false);
     MainWindow window;if(open>=0&&open+1<args.size())window.openPath(args[open+1]);window.show();
     if(importVideo>=0&&importVideo+1<args.size()){int tempo=0;if(importVideo+2<args.size()&&!args[importVideo+2].startsWith("--")){bool ok=false;const int requested=args[importVideo+2].toInt(&ok);if(!ok){fprintf(stderr,"The optional BPM must be a number.\n");return 64;}tempo=qBound(30,requested,260);}if(!window.transcribeVideoPath(args[importVideo+1],tempo))return 5;}
     if(args.contains("--live-follow"))window.showLiveScore();
@@ -132,6 +134,10 @@ int main(int argc,char*argv[]){
     if(chordDialogShot>=0&&chordDialogShot+1<args.size()){
         QTimer::singleShot(0,&window,[&window]{for(auto *action:window.findChildren<QAction*>())if(action->text().startsWith("Chord practice")){action->trigger();break;}});
         QTimer::singleShot(900,&window,[&app,path=args[chordDialogShot+1]]{if(auto *dialog=QApplication::activeModalWidget()){dialog->grab().save(path);dialog->close();}app.quit();});
+    }
+    if(routineDialogShot>=0&&routineDialogShot+1<args.size()){
+        QTimer::singleShot(0,&window,[&window]{for(auto *control:window.findChildren<QPushButton*>())if(control->text().contains("practice plan",Qt::CaseInsensitive)||control->toolTip().contains("practice plan",Qt::CaseInsensitive)){control->click();break;}});
+        QTimer::singleShot(900,&window,[&app,path=args[routineDialogShot+1]]{if(auto *dialog=QApplication::activeModalWidget()){dialog->grab().save(path);dialog->close();}app.quit();});
     }
     return app.exec();
 }

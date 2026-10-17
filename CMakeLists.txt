@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(VArpeggio VERSION 0.2.7 LANGUAGES CXX)
+project(VArpeggio VERSION 0.2.17 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -72,4 +72,11 @@ if(BUILD_TESTING)
     target_link_libraries(varpeggio_pdf_tests PRIVATE Qt6::Core Qt6::Gui Qt6::Pdf ${OpenCV_LIBS})
     add_test(NAME varpeggio_pdf_recognizer COMMAND varpeggio_pdf_tests)
     set_tests_properties(varpeggio_pdf_recognizer PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+    qt_add_executable(varpeggio_fingering_tests tests/fingering_test.cpp
+        src/musicwidgets.h src/musicwidgets.cpp src/musicdocument.h src/musicdocument.cpp)
+    target_include_directories(varpeggio_fingering_tests PRIVATE src ${OpenCV_INCLUDE_DIRS})
+    target_link_libraries(varpeggio_fingering_tests PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Xml ${OpenCV_LIBS} ZLIB::ZLIB)
+    add_test(NAME varpeggio_fingering COMMAND varpeggio_fingering_tests)
+    set_tests_properties(varpeggio_fingering PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()

@@ -630,34 +630,45 @@ QString MusicDocument::spelledNoteName(int midi, int fifths,
 QVector<NoteEvent> MusicDocument::morningLight() {
     QVector<NoteEvent> n;
     const int melody[] = {60,62,64,67,69,67,64,62,60,64,67,72};
+    const int melodyFingers[] = {1,2,3,4,5,4,3,2,1,2,3,5};
     const int bass[] = {48,48,45,43,48,45};
-    for (int i=0;i<12;++i) n << NoteEvent{melody[i], double(i), i==11?2.0:0.82, 92, Hand::Right};
-    for (int i=0;i<6;++i) n << NoteEvent{bass[i], double(i*2), 1.7, 76, Hand::Left};
+    const int bassFingers[] = {5,5,3,2,5,3};
+    for (int i=0;i<12;++i) {auto note=NoteEvent{melody[i], double(i), i==11?2.0:0.82, 92, Hand::Right};note.finger=melodyFingers[i];n<<note;}
+    for (int i=0;i<6;++i) {auto note=NoteEvent{bass[i], double(i*2), 1.7, 76, Hand::Left};note.finger=bassFingers[i];n<<note;}
     return sortNotes(n);
 }
 
 QVector<NoteEvent> MusicDocument::odeToJoy() {
     QVector<NoteEvent> n;
     const int melody[] = {64,64,65,67,67,65,64,62,60,60,62,64,64,62,62};
-    for (int i=0;i<15;++i) n << NoteEvent{melody[i], double(i), i>12?1.4:0.82, 92, Hand::Right};
+    const int melodyFingers[] = {3,3,4,5,5,4,3,2,1,1,2,3,3,2,2};
+    for (int i=0;i<15;++i) {auto note=NoteEvent{melody[i], double(i), i>12?1.4:0.82, 92, Hand::Right};note.finger=melodyFingers[i];n<<note;}
     for (int bar=0;bar<4;++bar) {
         const int root = (bar==2) ? 43 : 48;
-        n << NoteEvent{root, double(bar*4), 3.6, 72, Hand::Left};
-        n << NoteEvent{root+7, double(bar*4), 3.6, 66, Hand::Left};
+        auto low=NoteEvent{root, double(bar*4), 3.6, 72, Hand::Left};low.finger=5;n<<low;
+        auto high=NoteEvent{root+7, double(bar*4), 3.6, 66, Hand::Left};high.finger=1;n<<high;
     }
     return sortNotes(n);
 }
 
-QVector<NoteEvent> MusicDocument::scaleRoutine() {
+QVector<NoteEvent> MusicDocument::scaleRoutine(int tonicSemitones) {
     QVector<NoteEvent> n;
     const int rightScale[] = {0,2,4,5,7,9,11,12,11,9,7,5,4,2,0};
     // Contrary motion in C major does not mirror the semitone distances.
     // The left hand descends C-B-A-G-F-E-D-C, staying on the same natural
     // pitch collection as the ascending right hand.
     const int leftScale[] = {0,-1,-3,-5,-7,-8,-10,-12,-10,-8,-7,-5,-3,-1,0};
+    QVector<int> rightAscending{1,2,3,1,2,3,4,5};
+    QVector<int> leftAscending{5,4,3,2,1,3,2,1};
+    const int pitchClass=((tonicSemitones%12)+12)%12;
+    if(pitchClass==5)rightAscending={1,2,3,4,1,2,3,4};
+    else if(pitchClass==10){rightAscending={2,1,2,3,1,2,3,4};leftAscending={3,2,1,4,3,2,1,3};}
+    else if(pitchClass==3){rightAscending={3,1,2,3,4,1,2,3};leftAscending={3,2,1,4,3,2,1,3};}
+    QVector<int> rightFingers=rightAscending;for(int index=rightAscending.size()-2;index>=0;--index)rightFingers.append(rightAscending[index]);
+    QVector<int> leftFingers;for(int index=leftAscending.size()-1;index>=0;--index)leftFingers.append(leftAscending[index]);for(int index=1;index<leftAscending.size();++index)leftFingers.append(leftAscending[index]);
     for (int i=0;i<15;++i) {
-        n << NoteEvent{60+rightScale[i], i*.5, .42, 88, Hand::Right};
-        n << NoteEvent{48+leftScale[i], i*.5, .42, 76, Hand::Left};
+        auto right=NoteEvent{60+tonicSemitones+rightScale[i], i*.5, .42, 88, Hand::Right};right.finger=rightFingers[i];n<<right;
+        auto left=NoteEvent{48+tonicSemitones+leftScale[i], i*.5, .42, 76, Hand::Left};left.finger=leftFingers[i];n<<left;
     }
     return sortNotes(n);
 }
@@ -669,8 +680,9 @@ QVector<NoteEvent> MusicDocument::chordRoutine(int variation) {
     for (int i=0;i<4;++i) {
         const int qualityThird = (roots[i]==9) ? 3 : 4;
         const double beat = i*2.0;
-        for (int p : {48+roots[i], 60+roots[i], 60+roots[i]+qualityThird, 67+roots[i]})
-            n << NoteEvent{p, beat, 1.6, p<60?74:90, p<60?Hand::Left:Hand::Right};
+        const QVector<int> pitches{48+roots[i],60+roots[i],60+roots[i]+qualityThird,67+roots[i]};
+        const QVector<int> fingers{5,1,3,5};
+        for(int index=0;index<pitches.size();++index){const int p=pitches[index];auto note=NoteEvent{p,beat,1.6,p<60?74:90,p<60?Hand::Left:Hand::Right};note.finger=fingers[index];n<<note;}
     }
     return sortNotes(n);
 }
@@ -779,7 +791,7 @@ bool MusicDocument::importAbc(const QByteArray &data, QVector<NoteEvent> &notes,
 
 bool MusicDocument::importJson(const QByteArray &data, QVector<NoteEvent> &notes, int &tempo, QString &title, QString *error,QVector<TimeSignatureEvent>*timeSignatures,QVector<double>*repeatEnds,QVector<KeySignatureEvent>*keySignatures,QVector<StaffRestEvent>*rests,QVector<PedalEvent>*pedals) {
     auto doc=QJsonDocument::fromJson(data); if(!doc.isObject()){setError(error,"Invalid VArpeggio project.");return false;} auto o=doc.object();if(o.value("format").toString()!="varpeggio-project"){setError(error,"This is not a VArpeggio project.");return false;}tempo=o.value("tempo").toInt(tempo); title=o.value("title").toString(title);
-    for(auto v:o.value("notes").toArray()){auto n=v.toObject();notes<<NoteEvent{n.value("note").toInt(),n.value("start").toDouble(),n.value("duration").toDouble(1),n.value("velocity").toInt(90),n.value("hand").toString()=="left"?Hand::Left:Hand::Right,AccidentalMark(qBound(0,n.value("accidental").toInt(0),3))};}
+    for(auto v:o.value("notes").toArray()){auto n=v.toObject();notes<<NoteEvent{n.value("note").toInt(),n.value("start").toDouble(),n.value("duration").toDouble(1),n.value("velocity").toInt(90),n.value("hand").toString()=="left"?Hand::Left:Hand::Right,AccidentalMark(qBound(0,n.value("accidental").toInt(0),3)),qBound(0,n.value("finger").toInt(0),5)};}
     if(timeSignatures){timeSignatures->clear();for(const auto &value:o.value("timeSignatures").toArray()){const auto event=value.toObject();timeSignatures->append({event.value("beat").toDouble(),event.value("beats").toInt(4),event.value("beatType").toInt(4)});}}
     if(keySignatures){keySignatures->clear();for(const auto &value:o.value("keySignatures").toArray()){const auto event=value.toObject();keySignatures->append({event.value("beat").toDouble(),qBound(-7,event.value("fifths").toInt(),7)});}}
     if(repeatEnds){repeatEnds->clear();for(const auto &value:o.value("repeatEnds").toArray())repeatEnds->append(value.toDouble());}
@@ -840,7 +852,7 @@ bool MusicDocument::saveEngravedScore(const QString &musicXmlPath,const QString 
 
 bool MusicDocument::saveAbc(const QString&path,const QVector<NoteEvent>&source,int tempo,const QString&title,QString*error){auto notes=sortNotes(source);QString s="X:1\nT:"+title+"\nM:4/4\nL:1/4\nQ:1/4="+QString::number(tempo)+"\nK:C\n";int i=0;while(i<notes.size()){double start=notes[i].start;QVector<NoteEvent>g;while(i<notes.size()&&qAbs(notes[i].start-start)<.001)g<<notes[i++];if(g.size()>1)s+='[';for(const auto&n:g){int pc=n.note%12;QString name=QString::fromLatin1(kNames[pc]).replace("#","^");if(n.note>=72)name=name.toLower()+QString(n.note/12-6,'\'');else if(n.note<60)name+=QString(5-n.note/12,',');s+=name;}if(g.size()>1)s+=']';double d=g[0].duration;if(d<.75)s+="/2";else if(d>1.5)s+='2';s+=' ';}return writeAll(path,s.toUtf8(),error);}
 
-bool MusicDocument::saveJson(const QString&path,const QVector<NoteEvent>&notes,int tempo,const QString&title,QString*error,const QVector<TimeSignatureEvent>&timeSignatures,const QVector<double>&repeatEnds,const QVector<KeySignatureEvent>&keySignatures,const QVector<StaffRestEvent>&rests,const QVector<PedalEvent>&pedals){QJsonObject o{{"format","varpeggio-project"},{"version",3},{"title",title},{"tempo",tempo}};QJsonArray a;for(const auto&n:notes)a.append(QJsonObject{{"note",n.note},{"start",n.start},{"duration",n.duration},{"velocity",n.velocity},{"hand",n.hand==Hand::Left?"left":"right"},{"accidental",int(n.accidental)}});o["notes"]=a;QJsonArray meters;for(const auto&m:timeSignatures)meters.append(QJsonObject{{"beat",m.beat},{"beats",m.beats},{"beatType",m.beatType}});o["timeSignatures"]=meters;QJsonArray keys;for(const auto&k:keySignatures)keys.append(QJsonObject{{"beat",k.beat},{"fifths",k.fifths}});o["keySignatures"]=keys;QJsonArray repeats;for(double beat:repeatEnds)repeats.append(beat);o["repeatEnds"]=repeats;QJsonArray restArray;for(const auto&r:rests)restArray.append(QJsonObject{{"beat",r.beat},{"duration",r.duration},{"hand",r.hand==Hand::Left?"left":"right"}});o["rests"]=restArray;QJsonArray pedalArray;for(const auto&p:pedals)pedalArray.append(QJsonObject{{"beat",p.beat},{"down",p.down}});o["pedalEvents"]=pedalArray;return writeAll(path,QJsonDocument(o).toJson(QJsonDocument::Indented),error);}
+bool MusicDocument::saveJson(const QString&path,const QVector<NoteEvent>&notes,int tempo,const QString&title,QString*error,const QVector<TimeSignatureEvent>&timeSignatures,const QVector<double>&repeatEnds,const QVector<KeySignatureEvent>&keySignatures,const QVector<StaffRestEvent>&rests,const QVector<PedalEvent>&pedals){QJsonObject o{{"format","varpeggio-project"},{"version",3},{"title",title},{"tempo",tempo}};QJsonArray a;for(const auto&n:notes)a.append(QJsonObject{{"note",n.note},{"start",n.start},{"duration",n.duration},{"velocity",n.velocity},{"hand",n.hand==Hand::Left?"left":"right"},{"accidental",int(n.accidental)},{"finger",n.finger}});o["notes"]=a;QJsonArray meters;for(const auto&m:timeSignatures)meters.append(QJsonObject{{"beat",m.beat},{"beats",m.beats},{"beatType",m.beatType}});o["timeSignatures"]=meters;QJsonArray keys;for(const auto&k:keySignatures)keys.append(QJsonObject{{"beat",k.beat},{"fifths",k.fifths}});o["keySignatures"]=keys;QJsonArray repeats;for(double beat:repeatEnds)repeats.append(beat);o["repeatEnds"]=repeats;QJsonArray restArray;for(const auto&r:rests)restArray.append(QJsonObject{{"beat",r.beat},{"duration",r.duration},{"hand",r.hand==Hand::Left?"left":"right"}});o["rests"]=restArray;QJsonArray pedalArray;for(const auto&p:pedals)pedalArray.append(QJsonObject{{"beat",p.beat},{"down",p.down}});o["pedalEvents"]=pedalArray;return writeAll(path,QJsonDocument(o).toJson(QJsonDocument::Indented),error);}
 bool MusicDocument::saveCsv(const QString&path,const QVector<NoteEvent>&notes,QString*error){QByteArray b="note,name,start_beats,duration_beats,velocity,hand\n";for(const auto&n:notes)b+=QByteArray::number(n.note)+','+noteName(n.note).toUtf8()+','+QByteArray::number(n.start,'f',3)+','+QByteArray::number(n.duration,'f',3)+','+QByteArray::number(n.velocity)+','+(n.hand==Hand::Left?"left":"right")+'\n';return writeAll(path,b,error);}
 
 bool MusicDocument::saveWav(const QString&path,const QVector<NoteEvent>&notes,int tempo,QString*error){const int sr=44100;double spb=60.0/qMax(1,tempo),length=1;for(const auto&n:notes)length=qMax(length,(n.start+n.duration)*spb+1);int frames=int(length*sr);QVector<float>mix(frames);for(const auto&n:notes){int a=int(n.start*spb*sr),z=qMin(frames,int((n.start+n.duration)*spb*sr));double phase=0,inc=2*M_PI*440.0*qPow(2.0,(n.note-69)/12.0)/sr,amp=.14*n.velocity/127.0;for(int i=a;i<z;++i){double t=(i-a)/double(sr),remain=(z-i)/double(sr);double env=qMin(1.0,t/.01)*qMin(1.0,remain/.08)*qExp(-t*.35);mix[i]+=float((qSin(phase)+.22*qSin(phase*2))*amp*env);phase+=inc;}}QByteArray pcm;pcm.reserve(frames*4);for(float f:mix){qint16 v=qBound(-32767,int(f*32767),32767);putLe16(pcm,v);putLe16(pcm,v);}QByteArray out="RIFF";putLe32(out,36+pcm.size());out+="WAVEfmt ";putLe32(out,16);putLe16(out,1);putLe16(out,2);putLe32(out,sr);putLe32(out,sr*4);putLe16(out,4);putLe16(out,16);out+="data";putLe32(out,pcm.size());out+=pcm;return writeAll(path,out,error);}

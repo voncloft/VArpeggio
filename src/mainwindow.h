@@ -73,6 +73,7 @@ private:
     void setHandFilter(int filter);
     void rebuildPractice();
     void updateExpected();
+    void updatePianoFingeringHints(double beat, const QSet<int> &preferredNotes = {});
     void updateStats();
     void updateSongMeta();
     void changeTempo(int tempo);
@@ -101,6 +102,7 @@ private:
     void updateScoreHistory(double liveBeat, bool forceFollow = false);
     void syncFreePlayScore();
     void setFreePlayGrouping(bool grouped, double beat = -1.0);
+    void finishFreePlayEditing(bool announce = true);
 
     void importScore();
     void openScore(const QString &path);
@@ -225,6 +227,7 @@ private:
     QCheckBox *m_sourceAudio = nullptr;
     QPushButton *m_detectorButton = nullptr;
     QCheckBox *m_noteNames = nullptr;
+    QCheckBox *m_fingerNumbers = nullptr;
     QCheckBox *m_bubbles = nullptr;
     QCheckBox *m_metronome = nullptr;
     QCheckBox *m_sound = nullptr;

@@ -98,6 +98,56 @@ Soundtrack-only polyphonic transcription remains experimental. Clean solo piano 
 
 ## Changelog
 
+### 0.2.17 — 2026-10-16
+
+- Made the Grand Staff viewport completely static. It permanently uses the same A0-to-C8 vertical bounds, 212-pixel panel height, and notation scale regardless of the notes, measure, hand filter, or playback position.
+- High and low passages now use octave notation inside that fixed viewport without triggering zoom or changing the panel size: what is visible at the beginning is exactly the scale retained everywhere.
+
+### 0.2.15 — 2026-10-16
+
+- Added just seven pixels of height back to the tightly cropped Grand Staff panel so the upper right-hand fingering coordinates remain fully visible. The notation and clef scale are unchanged.
+
+### 0.2.14 — 2026-10-16
+
+- Removed the last oversized blank bands inside the Grand Staff canvas. The A0/C8 range test now leaves an approximately five-pixel frame around its `15ma` and `8vb` markings.
+- The change reduces the panel and internal viewport heights only; it does not raise the maximum notation or clef scale.
+
+### 0.2.13 — 2026-10-16
+
+- Tightened the white Grand Staff canvas itself around its highest and lowest visible notation, removing the remaining broad blank band inside the score border.
+- Reduced the panel height without enlarging the notation: the treble clef, bass clef, staff, notes, and annotations retain the same capped rendering scale, including an A0-to-C8 extreme-range score.
+
+### 0.2.12 — 2026-10-16
+
+- Shrunk the expanded Grand Staff panel around the notation's useful vertical band instead of leaving a large empty area above and below it. The viewport retains enough room for A0, C8, fingering, octave brackets, and pedal marks.
+- The score may crop unused internal canvas on wide windows, but its uniform scale is capped at the established size: treble and bass clefs are neither enlarged nor distorted to fill the smaller panel. Staff clicking, seeking, and edit-cursor placement use the same cropped coordinate mapping.
+
+### 0.2.11 — 2026-10-16
+
+- **Note names** and **Finger numbers** are now both restored as active learning aids when VArpeggio reopens, not merely saved as checkbox values. Their states are persisted immediately when toggled and confirmed again during a clean application close.
+
+### 0.2.10 — 2026-10-16
+
+- Finishing the Free Play staff editor with **Apply changes** now exits insertion mode and removes the orange `ADD` line. The line can also be dismissed with **Done editing — hide ADD line** in the staff's right-click menu or with Escape; canceling the editor still preserves the previous insertion position.
+
+### 0.2.9 — 2026-10-16
+
+- Finger-number help now extends to the full 88-key virtual keyboard in Wait, Listen, Play Along, and Free Play. Each current or upcoming key displays its synchronized 1–5 finger badge; chords show one badge per key, active keys change badge color, and playback, score preview, seeking, and practice progression all advance the hints with the score.
+- Moved right-hand score fingering into a dedicated lane above the measure headings so finger numbers on the first beat of M1, M2, and later measures remain fully visible instead of colliding with bar labels.
+- Added rendered keyboard and dense-score screenshot checks alongside exact B-flat-major pitch and fingering regression coverage.
+
+### 0.2.8 — 2026-10-16
+
+- Added an optional, remembered **Finger numbers** learning aid across Wait, Listen, Play Along, and Free Play. Built-in melodies and chord exercises include authored 1–5 fingering, daily scales use key-specific conventional crossings, and imported or newly played notes receive practical suggestions when the source contains none. Treble and bass each use one consistent horizontal fingering guide outside their visible notation; only simultaneous chord fingers form a vertical stack at the chord's fixed X position. Learning-aid switches occupy a dedicated responsive header row so large KDE fonts do not hide them.
+- Automatic fingering now evaluates each melodic phrase as a whole, uses neighboring fingers for neighboring notes, and reserves thumb crossings for ergonomic hand-position changes instead of producing adjacent `1 → 5` jumps.
+- Large register leaps now start a new fingering phrase and reset to its natural hand position. For example, a new ascending left-hand B–C–D group uses `5–4–3` instead of carrying an unnecessary `1–3–2` thumb crossing across the leap.
+- Short monotonic phrases of up to five notes remain in one natural five-finger position, preventing needless end-of-phrase crossings such as a descending left-hand `1–2–3–1` instead of `1–2–3–4`.
+- Added dedicated fingering regression coverage for both hands, short positions, octave-scale crossings, large-leap resets, repeated notes, chords, black-key patterns, authored overrides, and adjacent-finger safety.
+- Extreme 88-key pitches now use conventional grouped `8va`/`8vb` or `15ma`/`15mb` octave brackets, keeping the sounding pitch unchanged while avoiding tall ladders of ledger lines and off-frame noteheads.
+- Fixed overlapping note-name helpers on close chord tones by arranging each chord's labels into a readable, pitch-ordered column.
+- Reflowed the Daily Practice Plan around KDE's actual system font so its date navigation, instructions, lesson rows, and action buttons remain fully readable at large font sizes.
+- VArpeggio project files now preserve lesson fingering metadata when saved and reopened.
+
 ### 0.2.7 — 2026-10-15
 
 - Increased the internal sampled-piano sink safety buffer from 64 KiB to 96 KiB to prevent occasional PC-speaker underruns during desktop scheduling stalls.

@@ -3,6 +3,7 @@
 #include "musicdocument.h"
 
 #include <QElapsedTimer>
+#include <QHash>
 #include <QSet>
 #include <QTimer>
 #include <QWidget>
@@ -25,6 +26,7 @@ public:
     void setRepeatEnds(const QVector<double> &beats);
     void setPedalEvents(const QVector<PedalEvent> &events);
     void setShowNames(bool show);
+    void setShowFingering(bool show);
     void setHandFilter(int filter);
     void paintScore(QPainter &p, const QRectF &target) const;
     const QVector<NoteEvent> &notes() const { return m_notes; }
@@ -50,6 +52,8 @@ protected:
 
 private:
     QPair<double,double> viewRange() const;
+    QRectF canvasViewport(const QRectF &target) const;
+    QPointF widgetToCanvas(const QPointF &point) const;
     QVector<NoteEvent> m_notes;
     QVector<TimeSignatureEvent> m_timeSignatures{{0.0,4,4}};
     QVector<KeySignatureEvent> m_keySignatures{{0.0,0}};
@@ -61,6 +65,7 @@ private:
     double m_playedBeat = -1;
     double m_followBeat = 0;
     bool m_showNames = false;
+    bool m_showFingering = false;
     bool m_liveWriting = false;
     bool m_editEnabled = false;
     bool m_seekEnabled = true;
@@ -77,6 +82,7 @@ class PianoWidget : public QWidget {
 public:
     explicit PianoWidget(QWidget *parent = nullptr);
     void setActive(int note, bool active);
+    void setFingerHints(const QHash<int,int> &hints);
     QSize sizeHint() const override { return {900, 168}; }
 
 signals:
@@ -94,6 +100,7 @@ private:
     int noteAt(const QPointF &point) const;
     QRectF noteRect(int note) const;
     QSet<int> m_active;
+    QHash<int,int> m_fingerHints;
     int m_mouseNote = -1;
     const int m_low = 21, m_high = 108;
 };

@@ -23,6 +23,7 @@
 #include <QFontMetrics>
 #include <QFutureWatcher>
 #include <QGraphicsDropShadowEffect>
+#include <QGridLayout>
 #include <QIcon>
 #include <QHeaderView>
 #include <QHBoxLayout>
@@ -72,7 +73,7 @@
 #include <limits>
 
 #ifndef VARPEGGIO_VERSION
-#define VARPEGGIO_VERSION "0.2.7"
+#define VARPEGGIO_VERSION "0.2.17"
 #endif
 
 namespace {
@@ -379,7 +380,7 @@ MainWindow::MainWindow(QWidget *parent):QMainWindow(parent),m_synth(this),m_midi
     m_sourcePlayer=new QMediaPlayer(this);if(!noAudio){m_sourceAudioOutput=new QAudioOutput(this);m_sourcePlayer->setAudioOutput(m_sourceAudioOutput);}
     m_keyMap={{Qt::Key_A,60},{Qt::Key_W,61},{Qt::Key_S,62},{Qt::Key_E,63},{Qt::Key_D,64},{Qt::Key_F,65},{Qt::Key_T,66},{Qt::Key_G,67},{Qt::Key_Y,68},{Qt::Key_H,69},{Qt::Key_U,70},{Qt::Key_J,71},{Qt::Key_K,72}};
     auto*root=new QWidget;auto*rootLayout=new QVBoxLayout(root);rootLayout->setContentsMargins(0,0,0,0);rootLayout->setSpacing(0);rootLayout->addWidget(buildHeader());auto*body=new QWidget;auto*bodyLayout=new QHBoxLayout(body);bodyLayout->setContentsMargins(0,0,0,0);bodyLayout->setSpacing(0);bodyLayout->addWidget(buildSidebar());bodyLayout->addWidget(buildWorkspace(),1);rootLayout->addWidget(body,1);setCentralWidget(root);
-    buildMenus();applyStyle();connectUi();setSong("Morning Light",MusicDocument::morningLight(),96);setMode(Mode::Wait);
+    buildMenus();applyStyle();connectUi();m_score->setShowNames(m_noteNames->isChecked());m_score->setShowFingering(m_fingerNumbers->isChecked());setSong("Morning Light",MusicDocument::morningLight(),96);setMode(Mode::Wait);
     QSettings windowSettings("Voncloft","VArpeggio");const QByteArray savedGeometry=windowSettings.value("ui/mainWindowGeometry").toByteArray();if(!savedGeometry.isEmpty())restoreGeometry(savedGeometry);const QByteArray savedWindowState=windowSettings.value("ui/mainWindowState").toByteArray();if(!savedWindowState.isEmpty())restoreState(savedWindowState);if(windowSettings.value("ui/mainWindowMaximized",false).toBool())setWindowState(windowState()|Qt::WindowMaximized);
     m_frameTimer.setInterval(25);connect(&m_frameTimer,&QTimer::timeout,this,&MainWindow::updateClocks);m_frameTimer.start();m_metroClock.start();m_waitAdvanceClock.start();if(!noAudio)m_midi.start();statusBar()->hide();
 }
@@ -786,10 +787,12 @@ QWidget *MainWindow::buildWorkspace() {
   sl->setSpacing(0);
   auto *scoreTop = new QWidget;
   scoreTop->setObjectName("cardTop");
-  auto *st = new QHBoxLayout(scoreTop);
+  auto *st = new QGridLayout(scoreTop);
   st->setContentsMargins(16, 7, 13, 7);
+  st->setHorizontalSpacing(8);
+  st->setVerticalSpacing(4);
   m_barLabel = label("SCORE   ·   Bar 1 of 3", "sectionHeading");
-  st->addWidget(m_barLabel);
+  st->addWidget(m_barLabel,0,0);
   auto *scoreControls = new QWidget;
   auto *scoreControlsLayout = new QHBoxLayout(scoreControls);
   scoreControlsLayout->setContentsMargins(0, 0, 0, 0);
@@ -839,16 +842,29 @@ QWidget *MainWindow::buildWorkspace() {
   scoreControlsLayout->addWidget(hands);
   m_metronome = new QCheckBox("Metronome");
   m_noteNames = new QCheckBox("Note names");
+  m_noteNames->setObjectName("noteNames");
   m_noteNames->setToolTip(
       "Optional learning aid: show pitch names beside notes");
+  m_noteNames->setChecked(QSettings("Voncloft","VArpeggio").value("practice/showNoteNames",false).toBool());
+  m_fingerNumbers = new QCheckBox("Finger numbers");
+  m_fingerNumbers->setObjectName("fingerNumbers");
+  m_fingerNumbers->setToolTip(
+      "Optional learning aid: show conventional 1–5 fingering supplied with lessons");
+  m_fingerNumbers->setChecked(QSettings("Voncloft","VArpeggio").value("practice/showFingering",false).toBool());
   m_bubbles = new QCheckBox("Falling notes");
   m_bubbles->setChecked(true);
-  for (auto *c : {m_metronome, m_noteNames, m_bubbles})
-    scoreControlsLayout->addWidget(c);
-  st->addWidget(scoreControls, 1);
+  auto *learningAids=new QWidget;
+  auto *learningAidsLayout=new QHBoxLayout(learningAids);
+  learningAidsLayout->setContentsMargins(0,0,0,0);
+  learningAidsLayout->setSpacing(10);
+  for (auto *c : {m_metronome, m_noteNames, m_fingerNumbers, m_bubbles})
+    learningAidsLayout->addWidget(c);
+  learningAidsLayout->addStretch();
+  st->addWidget(scoreControls,0,1);
+  st->addWidget(learningAids,1,0,1,2);
   auto *scoreCollapse = button("⌃", "sectionCollapseButton");
   scoreCollapse->setToolTip("Collapse the Grand Staff section");
-  st->addWidget(scoreCollapse);
+  st->addWidget(scoreCollapse,0,2,2,1,Qt::AlignTop);
   sl->addWidget(scoreTop);
   auto *scoreBody = new QWidget;
   auto *scoreBodyLayout = new QVBoxLayout(scoreBody);
@@ -863,7 +879,8 @@ QWidget *MainWindow::buildWorkspace() {
   m_pdfView->setPageMode(QPdfView::PageMode::MultiPage);
   m_pdfView->setZoomMode(QPdfView::ZoomMode::FitToWidth);
   m_scoreStack->addWidget(m_pdfView);
-  m_scoreStack->setMinimumHeight(520);
+  // Permanent A0-C8 viewport: fixed panel and fixed notation scale.
+  m_scoreStack->setFixedHeight(212);
   scoreBodyLayout->addWidget(m_scoreStack, 1);
   m_scoreHistoryRow = new QWidget;
   m_scoreHistoryRow->setObjectName("scoreHistoryRow");
@@ -893,9 +910,7 @@ QWidget *MainWindow::buildWorkspace() {
     scoreControls->setVisible(expanded);
     scoreCard->setMaximumHeight(expanded ? QWIDGETSIZE_MAX
                                          : scoreTop->sizeHint().height());
-    scoreCard->setSizePolicy(QSizePolicy::Preferred,
-                             expanded ? QSizePolicy::Expanding
-                                      : QSizePolicy::Fixed);
+    scoreCard->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
   };
   const bool scoreExpanded =
       QSettings("Voncloft", "VArpeggio").value("ui/scoreExpanded", true).toBool();
@@ -907,7 +922,7 @@ QWidget *MainWindow::buildWorkspace() {
             QSettings("Voncloft", "VArpeggio").setValue("ui/scoreExpanded",
                                                            expanded);
           });
-  l->addWidget(scoreCard, 3);
+  l->addWidget(scoreCard, 0);
   auto *practiceSection = makeCard("card");
   practiceSection->setFixedHeight(340);
   auto *practiceSectionLayout = new QVBoxLayout(practiceSection);
@@ -1257,7 +1272,7 @@ void MainWindow::applyStyle() {
 }
 
 void MainWindow::connectUi() {
-  m_scoreStack->setMinimumHeight(520);
+  m_scoreStack->setFixedHeight(212);
   m_sourceAudio->setText("Hear original recording (reference only)");
   m_sourceAudio->setToolTip(
       "Reference only; leave off to hear the generated staff notes");
@@ -1327,8 +1342,15 @@ void MainWindow::connectUi() {
           &MainWindow::openDetectorView);
   connect(m_piano, &PianoWidget::notePressed, this, &MainWindow::userNoteOn);
   connect(m_piano, &PianoWidget::noteReleased, this, &MainWindow::userNoteOff);
-  connect(m_noteNames, &QCheckBox::toggled, m_score,
-          &ScoreWidget::setShowNames);
+  connect(m_noteNames,&QCheckBox::toggled,this,[this](bool show){m_score->setShowNames(show);QSettings("Voncloft","VArpeggio").setValue("practice/showNoteNames",show);});
+  connect(m_fingerNumbers,&QCheckBox::toggled,this,[this](bool show){
+    m_score->setShowFingering(show);
+    if(show){
+      if(m_mode==Mode::Free){double beat=m_freePlayEditBeat;for(const auto &note:m_freePlayNotes)beat=qMax(beat,note.start);updatePianoFingeringHints(qMax(0.0,beat));}
+      else updateExpected();
+    }else m_piano->setFingerHints({});
+    QSettings("Voncloft","VArpeggio").setValue("practice/showFingering",show);
+  });
   connect(m_bubbles, &QCheckBox::toggled, m_bubble,
           &BubbleWidget::setBubblesVisible);
   connect(m_sound, &QCheckBox::toggled, this, [this](bool on) {
@@ -1505,6 +1527,7 @@ void MainWindow::connectUi() {
                                             ? "Done grouping — resume stepping"
                                             : "Group notes with this note");
         group->setData("toggle-group");
+        if(m_freePlayEditBeat>=0){QAction *done=menu.addAction("Done editing — hide ADD line");done->setData("finish-edit");}
         QAction *remove=menu.addAction("Delete "+MusicDocument::noteName(m_freePlayNotes[index].note));
         remove->setData("delete");
         QAction *selected=menu.exec(globalPosition);
@@ -1514,6 +1537,8 @@ void MainWindow::connectUi() {
         if(command=="toggle-group"){
           setFreePlayGrouping(!m_freePlayGroupEntry,
                               m_freePlayNotes[index].start);
+        } else if(command=="finish-edit") {
+          finishFreePlayEditing();
         } else if (command == "delete") {
           const QString name =
               MusicDocument::noteName(m_freePlayNotes[index].note);
@@ -1555,6 +1580,7 @@ void MainWindow::connectUi() {
                                             ? "Done grouping — resume stepping"
                                             : "Group notes at this position");
         group->setData("toggle-group");
+        if(m_freePlayEditBeat>=0){QAction *done=menu.addAction("Done editing — hide ADD line");done->setData("finish-edit");}
         menu.addSeparator();
         QMenu *meter=menu.addMenu("Time signature here");
         for(const QString &value:{QStringLiteral("2/4"),QStringLiteral("3/4"),QStringLiteral("4/4"),QStringLiteral("5/4"),QStringLiteral("6/8"),QStringLiteral("9/8"),QStringLiteral("12/8")}){
@@ -1600,6 +1626,9 @@ void MainWindow::connectUi() {
         const QString command = selected->data().toString();
         if(command=="toggle-group"){
           setFreePlayGrouping(!m_freePlayGroupEntry, beat);
+        }else if(command=="finish-edit"){
+          finishFreePlayEditing();
+          return;
         }else if(command.startsWith("meter:")){
           const QStringList pieces = command.mid(6).split('/');
           if (pieces.size() != 2)
@@ -1990,7 +2019,27 @@ void MainWindow::updateExpected(){
         m_coachLabel->setText(expected.size()>1?QString("Play all %1 chord notes\nWait mode advances when the complete chord sounds.").arg(expected.size()):"Find "+names.first()+"\nTake your time. The music waits for you.");
     }else m_coachLabel->setText(m_groups.isEmpty()?"Choose or import a score\nThen start playing.":"Practice complete!\nExcellent focus — run it once more.");
     m_nextNoteLabel->setStyleSheet(QString("font-size:%1pt;font-weight:700;color:#173f39").arg(displaySize,0,'f',1));m_nextNoteLabel->setText(displayText);
-    m_score->setExpected(expected,start);if(m_mode==Mode::Free||m_scoreAutoFollow)m_score->setFollowBeat(start);m_bubble->setExpected(expected,start);m_barLabel->setText(QString("SCORE   ·   Bar %1 of %2").arg(qMax(1,int(start/4)+1)).arg(qMax(1,int((m_notes.isEmpty()?0:m_notes.last().start)/4)+1)));
+    m_score->setExpected(expected,start);if(m_mode==Mode::Free||m_scoreAutoFollow)m_score->setFollowBeat(start);m_bubble->setExpected(expected,start);updatePianoFingeringHints(start,expected);m_barLabel->setText(QString("SCORE   ·   Bar %1 of %2").arg(qMax(1,int(start/4)+1)).arg(qMax(1,int((m_notes.isEmpty()?0:m_notes.last().start)/4)+1)));
+}
+
+void MainWindow::updatePianoFingeringHints(double beat,const QSet<int>&preferredNotes){
+    if(!m_piano)return;
+    if(!m_fingerNumbers||!m_fingerNumbers->isChecked()){m_piano->setFingerHints({});return;}
+    const auto &scoreNotes=m_score->notes();QHash<int,int> hints;
+    auto visible=[this](const NoteEvent &note){return m_handFilter<0||(m_handFilter==0&&note.hand==Hand::Left)||(m_handFilter==1&&note.hand==Hand::Right);};
+    if(!preferredNotes.isEmpty()){
+        for(const auto &note:scoreNotes)if(visible(note)&&preferredNotes.contains(note.note)&&qAbs(note.start-beat)<.02&&note.finger>=1&&note.finger<=5)hints[note.note]=note.finger;
+    }else{
+        // During playback, keep all currently sounding fingers visible. In a
+        // gap, preview the next attack so the aid remains useful instead of
+        // blinking away between notes.
+        for(const auto &note:scoreNotes)if(visible(note)&&note.start<=beat+.035&&note.start+note.duration>beat-.035&&note.finger>=1&&note.finger<=5)hints[note.note]=note.finger;
+        if(hints.isEmpty()){
+            double next=std::numeric_limits<double>::max();for(const auto &note:scoreNotes)if(visible(note)&&note.start>=beat-.035)next=qMin(next,note.start);
+            if(next<std::numeric_limits<double>::max())for(const auto &note:scoreNotes)if(visible(note)&&qAbs(note.start-next)<.02&&note.finger>=1&&note.finger<=5)hints[note.note]=note.finger;
+        }
+    }
+    m_piano->setFingerHints(hints);
 }
 void MainWindow::updateStats(){const bool completed=m_routineStep>=0&&m_routineCompletedSteps.contains(m_routineStep);const int progress=completed?100:(m_earTraining?qMin(100,m_earTrainingSolved*10):(m_groups.isEmpty()?0:m_groupIndex*100/m_groups.size()));QString acc=m_attempts?QString::number(m_correct*100/m_attempts)+"%":"—";m_accuracyLabel->setText(acc+"\nACCURACY");m_streakLabel->setText(QString::number(m_streak)+"\nSTREAK");m_progressLabel->setText(QString::number(progress)+"%\nPROGRESS");}
 
@@ -2080,7 +2129,7 @@ void MainWindow::userNoteOn(int note,int velocity){if(m_heldNotes.contains(note)
         const Hand hand=note<60?Hand::Left:Hand::Right;
         if(inserting){m_freePlayRests.erase(std::remove_if(m_freePlayRests.begin(),m_freePlayRests.end(),[start,hand](const auto &rest){return rest.hand==hand&&start>=rest.beat-.001&&start<rest.beat+rest.duration-.001;}),m_freePlayRests.end());m_score->setRests(m_freePlayRests);}
         m_freePlayStarts[note]=start;m_freePlayIndexes[note]=m_freePlayNotes.size();m_freePlayPressMs[note]=pressMs;if(inserting)m_freePlayEditPressMs[note]=pressMs;m_freePlayNotes.append({note,start,.125,velocity,hand});
-        syncFreePlayScore();m_score->setNotes(m_freePlayNotes);m_score->setExpected({note},start);m_score->setPlayedBeat(start);if(inserting){m_freePlayAutoFollow=false;m_score->setFollowBeat(start);}else updateFreePlayHistory(m_freePlayAutoFollow);
+        syncFreePlayScore();m_score->setNotes(m_freePlayNotes);m_score->setExpected({note},start);m_score->setPlayedBeat(start);updatePianoFingeringHints(start);if(inserting){m_freePlayAutoFollow=false;m_score->setFollowBeat(start);}else updateFreePlayHistory(m_freePlayAutoFollow);
         m_bubble->setNotes(m_freePlayNotes);m_bubble->setExpected({note},start);m_bubble->setPlayhead(start);m_barLabel->setText("FREE PLAY   ·   "+MusicDocument::noteName(note)+" on the grand staff");m_score->repaint();
     }
     if(m_recording&&!m_recordStarts.contains(note))m_recordStarts[note]=m_recordClock.elapsed()/1000.0*m_tempo/60.0;
@@ -2199,7 +2248,7 @@ void MainWindow::seekPlayback(double beat){
     m_playbackOffsetSeconds=beat*60.0/qMax(1,clockTempo);m_playbackPaused=true;m_playing=false;
     if(m_usingImportedMediaAudio)m_sourcePlayer->setPosition(m_importedMediaStartMs+qRound64(m_playbackOffsetSeconds*1000.0));
     for(int i=0;i<m_notes.size();++i){const auto &note=m_notes[i];const bool use=m_handFilter<0||(m_handFilter==0&&note.hand==Hand::Left)||(m_handFilter==1&&note.hand==Hand::Right);if(!use||note.start>beat+.001)continue;m_startedEvents.insert(i);if(note.start+note.duration<=beat+.001)m_endedEvents.insert(i);}
-    if(m_mode==Mode::Free){m_freePlayAutoFollow=true;m_score->setEditEnabled(false);m_score->setSeekEnabled(true);m_score->setExpected({},0);m_bubble->setExpected({},0);m_score->setPlayedBeat(beat);updateFreePlayPreviewHistory(beat,true);}else{updateExpected();m_scoreAutoFollow=true;m_score->setPlayedBeat(beat);updateScoreHistory(beat,true);}m_bubble->setPlayhead(beat);updatePrimaryButton();toast("Moved to this point — press Play to resume");
+    if(m_mode==Mode::Free){m_freePlayAutoFollow=true;m_score->setEditEnabled(false);m_score->setSeekEnabled(true);m_score->setExpected({},0);m_bubble->setExpected({},0);m_score->setPlayedBeat(beat);updatePianoFingeringHints(beat);updateFreePlayPreviewHistory(beat,true);}else{updateExpected();m_scoreAutoFollow=true;m_score->setPlayedBeat(beat);updateScoreHistory(beat,true);}m_bubble->setPlayhead(beat);updatePrimaryButton();toast("Moved to this point — press Play to resume");
 }
 
 void MainWindow::stopPlayback(bool rewind){
@@ -2211,7 +2260,7 @@ void MainWindow::stopPlayback(bool rewind){
     m_playing=false;m_playbackPaused=false;m_usingImportedMediaAudio=false;m_playbackOffsetSeconds=0;
     m_sourcePlayer->stop();m_startedEvents.clear();m_endedEvents.clear();m_synth.stopSequence();m_midiOutput.allNotesOff();m_midiOutputNotes.clear();
     for(int n=21;n<=108;++n)if(!m_heldNotes.contains(n))m_piano->setActive(n,false);
-    if(rewind){m_score->setPlayedBeat(-1);if(m_mode==Mode::Free)m_score->setFollowBeat(m_freePlayEditBeat>=0?m_freePlayEditBeat:0);else{m_scoreAutoFollow=true;updateScoreHistory(0,true);}m_bubble->setPlayhead(0);}if(m_mode==Mode::Free){m_score->setEditEnabled(true);m_score->setSeekEnabled(false);m_score->setEditCursorBeat(m_freePlayEditBeat);}updatePrimaryButton();
+    if(rewind){m_score->setPlayedBeat(-1);if(m_mode==Mode::Free)m_score->setFollowBeat(m_freePlayEditBeat>=0?m_freePlayEditBeat:0);else{m_scoreAutoFollow=true;updateScoreHistory(0,true);}m_bubble->setPlayhead(0);updatePianoFingeringHints(0);}if(m_mode==Mode::Free){m_score->setEditEnabled(true);m_score->setSeekEnabled(false);m_score->setEditCursorBeat(m_freePlayEditBeat);}updatePrimaryButton();
 }
 
 void MainWindow::updateClocks(){
@@ -2222,7 +2271,7 @@ void MainWindow::updateClocks(){
         if(m_usingImportedMediaAudio&&m_sourcePlayer->position()>=m_importedMediaStartMs){elapsedSeconds=(m_sourcePlayer->position()-m_importedMediaStartMs)/1000.0;clockTempo=m_importedMediaTempo>0?m_importedMediaTempo:m_tempo;}
         beat=elapsedSeconds*clockTempo/60.0;clockActive=true;
         for(int i=0;i<m_notes.size();++i){const auto&n=m_notes[i];bool use=m_handFilter<0||(m_handFilter==0&&n.hand==Hand::Left)||(m_handFilter==1&&n.hand==Hand::Right);if(!use)continue;if(!m_startedEvents.contains(i)&&beat>=n.start){m_startedEvents.insert(i);playbackNoteOn(i);}if(m_startedEvents.contains(i)&&!m_endedEvents.contains(i)&&beat>=n.start+n.duration){m_endedEvents.insert(i);playbackNoteOff(i);}}
-        m_score->setPlayedBeat(beat);m_bubble->setPlayhead(beat);if(m_mode==Mode::Free)updateFreePlayPreviewHistory(beat);else{const int previousGroup=m_groupIndex;while(m_groupIndex+1<m_groups.size()&&m_groups[m_groupIndex+1].start<=beat+.08)m_groupIndex++;if(m_groupIndex!=previousGroup){m_matched.clear();updateExpected();}updateScoreHistory(beat);}
+        m_score->setPlayedBeat(beat);m_bubble->setPlayhead(beat);updatePianoFingeringHints(beat);if(m_mode==Mode::Free)updateFreePlayPreviewHistory(beat);else{const int previousGroup=m_groupIndex;while(m_groupIndex+1<m_groups.size()&&m_groups[m_groupIndex+1].start<=beat+.08)m_groupIndex++;if(m_groupIndex!=previousGroup){m_matched.clear();updateExpected();}updateScoreHistory(beat);}
         double end=0;for(const auto&n:m_notes){const bool use=m_handFilter<0||(m_handFilter==0&&n.hand==Hand::Left)||(m_handFilter==1&&n.hand==Hand::Right);if(use)end=qMax(end,n.start+n.duration);}if(beat>end+.2){const bool repeat=m_mode==Mode::Follow;const bool rewind=repeat||m_mode==Mode::Listen;stopPlayback(rewind);if(repeat)QTimer::singleShot(0,this,[this]{if(m_mode==Mode::Follow&&!m_playing&&!m_playbackPaused&&!m_notes.isEmpty())togglePlayback();});}
     }else if(m_mode==Mode::Wait&&!m_earTraining&&!m_groups.isEmpty()){
         const qint64 now=m_waitAdvanceClock.elapsed();
@@ -2251,7 +2300,7 @@ void MainWindow::updateClocks(){
     }else if(m_mode==Mode::Free&&m_freePlayClock.isValid()){
         beat=m_freePlayOffsetBeat+m_freePlayClock.elapsed()/1000.0*m_tempo/60.0;clockActive=true;bool durationChanged=false;
         for(auto it=m_freePlayStarts.cbegin();it!=m_freePlayStarts.cend();++it){const int note=it.key(),index=m_freePlayIndexes.value(note,-1);if(index<0||index>=m_freePlayNotes.size())continue;const double raw=m_freePlayPressMs.contains(note)?(m_freePlayClock.elapsed()-m_freePlayPressMs.value(note))*m_tempo/60000.0:beat-it.value();const double duration=qMax(.125,qRound(raw*8.0)/8.0);if(qAbs(m_freePlayNotes[index].duration-duration)>.001){m_freePlayNotes[index].duration=duration;durationChanged=true;}}
-        if(durationChanged){syncFreePlayScore();m_score->setNotes(m_freePlayNotes);m_bubble->setNotes(m_freePlayNotes);updateFreePlayHistory(m_freePlayEditBeat<0&&m_freePlayAutoFollow);m_score->repaint();}
+        if(durationChanged){syncFreePlayScore();m_score->setNotes(m_freePlayNotes);m_bubble->setNotes(m_freePlayNotes);updatePianoFingeringHints(m_freePlayEditBeat>=0?m_freePlayEditBeat:beat);updateFreePlayHistory(m_freePlayEditBeat<0&&m_freePlayAutoFollow);m_score->repaint();}
         double scoreEnd=0;for(const auto &event:m_freePlayNotes)scoreEnd=qMax(scoreEnd,event.start+event.duration);const double visualBeat=m_freePlayEditBeat>=0?m_freePlayEditBeat:(m_recording?beat:scoreEnd);m_bubble->setPlayhead(visualBeat);
     }else if(m_metronome->isChecked()){beat=m_metroClock.elapsed()/1000.0*m_tempo/60.0;clockActive=true;}
     if(m_metronome->isChecked()&&clockActive){int whole=int(std::floor(beat));if(whole!=m_lastMetroBeat){m_lastMetroBeat=whole;m_synth.click(whole%4==0);}}
@@ -2275,6 +2324,15 @@ void MainWindow::setFreePlayGrouping(bool grouped,double beat){
     m_freePlayGroupEntry=false;m_freePlayEditAdvance=0;if(longest>0)m_freePlayEditBeat=groupedBeat+longest;
     m_score->setEditCursorBeat(m_freePlayEditBeat);m_score->setFollowBeat(m_freePlayEditBeat);updateFreePlayHistory(false);
     m_barLabel->setText("FREE PLAY   ·   "+scorePosition(m_freePlayEditBeat,m_freePlayTimeSignatures)+" · Each note steps forward");toast("Grouping finished — normal stepping is back on");
+}
+
+void MainWindow::finishFreePlayEditing(bool announce){
+    if(m_mode!=Mode::Free)return;
+    m_freePlayGroupEntry=false;m_freePlayEditBeat=-1.0;m_freePlayEditAdvance=0.0;
+    m_freePlayEditPressMs.clear();m_freePlayAutoFollow=true;
+    m_score->setEditCursorBeat(-1.0);updateFreePlayHistory(true);
+    m_barLabel->setText(m_freePlayNotes.isEmpty()?"FREE PLAY   ·   Empty grand staff":QString("FREE PLAY   ·   Editing finished · %1 notes").arg(m_freePlayNotes.size()));
+    if(announce)toast("Editing finished — ADD line hidden");
 }
 
 void MainWindow::updateFreePlayHistory(bool followLatest){
@@ -2402,6 +2460,10 @@ void MainWindow::editFreePlayStaff(){
     m_generatedScoreDir.reset();
     m_scoreViewButton->hide();
     m_liveScoreButton->hide();
+    // Applying the editor means this editing session is finished. Keeping
+    // the old insertion beat made the orange ADD cursor reappear immediately
+    // after the dialog closed even though the user had explicitly finished.
+    finishFreePlayEditing(false);
     refreshFreePlayStaff();
     toast(QString("Applied %1 edited notes — ready to Save")
               .arg(m_freePlayNotes.size()));
@@ -2999,17 +3061,22 @@ QDialog#chordPracticeDialog QDialogButtonBox QPushButton:hover{color:white;backg
     QVector<int> intervals;for(const QString &value:quality->currentData().toString().split(',',Qt::SkipEmptyParts))intervals.append(value.toInt());
     const int inversionIndex=inversion->currentData().toInt();for(int index=0;index<inversionIndex&&index<intervals.size();++index)intervals[index]+=12;std::sort(intervals.begin(),intervals.end());
     const int rootPitch=root->currentIndex();const int selectedHand=hand->currentData().toInt();const int selectedPattern=pattern->currentData().toInt();QVector<NoteEvent> exercise;
-    auto appendTone=[&](int midi,double beat,double duration,Hand noteHand){exercise.append({qBound(21,midi,108),beat,duration,100,noteHand});};
+    auto chordFinger=[](int index,int count,Hand noteHand){
+        QVector<int> right;
+        if(count==2)right={1,5};else if(count==3)right={1,3,5};else if(count==4)right={1,2,3,5};else if(count==5)right={1,2,3,4,5};else return 0;
+        return noteHand==Hand::Right?right.value(index):right.value(count-1-index);
+    };
+    auto appendTone=[&](int midi,double beat,double duration,Hand noteHand,int finger){auto note=NoteEvent{qBound(21,midi,108),beat,duration,100,noteHand};note.finger=finger;exercise.append(note);};
     for(int repetition=0;repetition<8;++repetition){
         const double baseBeat=repetition*4.0;
         for(Hand noteHand:{Hand::Left,Hand::Right}){
             if((noteHand==Hand::Left&&selectedHand==1)||(noteHand==Hand::Right&&selectedHand==0))continue;
             const int base=(noteHand==Hand::Left?48:60)+rootPitch;
-            if(selectedPattern==0){for(int interval:intervals)appendTone(base+interval,baseBeat,2.0,noteHand);}
+            if(selectedPattern==0){for(int index=0;index<intervals.size();++index)appendTone(base+intervals[index],baseBeat,2.0,noteHand,chordFinger(index,intervals.size(),noteHand));}
             else{
                 QVector<int> sequence=intervals;if(selectedPattern==2&&intervals.size()>1)for(int index=intervals.size()-2;index>0;--index)sequence.append(intervals[index]);
                 const double step=qMax(.25,2.0/qMax(1,sequence.size()));
-                for(int index=0;index<sequence.size();++index)appendTone(base+sequence[index],baseBeat+index*step,qMax(.22,step*.82),noteHand);
+                for(int index=0;index<sequence.size();++index){const int toneIndex=intervals.indexOf(sequence[index]);appendTone(base+sequence[index],baseBeat+index*step,qMax(.22,step*.82),noteHand,chordFinger(toneIndex,intervals.size(),noteHand));}
             }
         }
     }
@@ -3020,13 +3087,17 @@ QDialog#chordPracticeDialog QDialogButtonBox QPushButton:hover{color:white;backg
 
 void MainWindow::openRoutineDialog(){
     const QDate today=QDate::currentDate();QDate viewedDate=today;int viewedVariation=dailyRoutineTheme(viewedDate).chordOrder;
-    QDialog d(this);d.setWindowTitle("Daily practice plan");d.setMinimumWidth(620);d.setModal(true);
+    QDialog d(this);d.setObjectName("routinePlanDialog");d.setWindowTitle("Daily practice plan");
+    const int dialogWidth=qMin(920,qMax(740,width()-60));const int dialogHeight=qMin(800,qMax(720,height()-60));d.setMinimumSize(dialogWidth,dialogHeight);d.resize(dialogWidth,dialogHeight);d.setModal(true);
     auto*l=new QVBoxLayout(&d);l->setContentsMargins(24,22,24,20);l->setSpacing(12);
-    auto*dateNav=new QHBoxLayout;auto*previousDay=button("← Previous day","routineDialogSecondary");auto*todayButton=button("Today","routineDialogSecondary");auto*nextDay=button("Next day →","routineDialogSecondary");auto*head=label("","routineDialogTitle");head->setAlignment(Qt::AlignCenter);head->setStyleSheet("font-size:22px;font-weight:800");dateNav->addWidget(previousDay);dateNav->addWidget(todayButton);dateNav->addWidget(head,1);dateNav->addWidget(nextDay);l->addLayout(dateNav);
-    auto*intro=label("Start once, then use Previous and Next above the score. VArpeggio carries you through both hands and the full piece without reopening this window.");intro->setWordWrap(true);intro->setStyleSheet("color:#526862;margin-bottom:4px");l->addWidget(intro);
-    QVector<QPair<QLabel*,QLabel*>> planRows;auto addPlanRow=[&](const QString &number){auto*row=new QFrame;row->setStyleSheet("QFrame{background:#fffefa;border:1px solid #dedbd1;border-radius:9px}");auto*rl=new QHBoxLayout(row);rl->setContentsMargins(13,10,13,10);auto*n=label(number);n->setStyleSheet("color:#ef775f;font-weight:800;font-size:16px;border:0");rl->addWidget(n);auto*copy=new QVBoxLayout;copy->setSpacing(1);auto*t=label("");t->setStyleSheet("font-weight:800;border:0");auto*sub=label("");sub->setStyleSheet("color:#71807c;border:0");copy->addWidget(t);copy->addWidget(sub);rl->addLayout(copy,1);l->addWidget(row);planRows.append(qMakePair(t,sub));};for(const QString &number:{QStringLiteral("01"),QStringLiteral("02"),QStringLiteral("03"),QStringLiteral("04")})addPlanRow(number);
+    const QFontMetrics routineMetrics(QApplication::font());
+    auto*head=label("","routineDialogTitle");head->setAlignment(Qt::AlignCenter);QFont headFont=QApplication::font();headFont.setBold(true);headFont.setPointSizeF(qMax<qreal>(headFont.pointSizeF()+2.0,12.0));head->setFont(headFont);l->addWidget(head);
+    auto*dateNav=new QHBoxLayout;auto*previousDay=button("← Previous day","routineDialogSecondary");auto*todayButton=button("Today","routineDialogSecondary");auto*nextDay=button("Next day →","routineDialogSecondary");dateNav->addStretch();dateNav->addWidget(previousDay);dateNav->addWidget(todayButton);dateNav->addWidget(nextDay);dateNav->addStretch();l->addLayout(dateNav);
+    auto*intro=label("Start once, then use Previous and Next above the score. VArpeggio carries you through both hands and the full piece without reopening this window.");intro->setWordWrap(true);intro->setStyleSheet("color:#526862;margin-bottom:4px");intro->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Minimum);intro->setMinimumHeight(intro->fontMetrics().height()*3+8);l->addWidget(intro);
+    QVector<QPair<QLabel*,QLabel*>> planRows;auto addPlanRow=[&](const QString &number){auto*row=new QFrame;row->setMinimumHeight(routineMetrics.height()*2+28);row->setStyleSheet("QFrame{background:#fffefa;border:1px solid #dedbd1;border-radius:9px}");auto*rl=new QHBoxLayout(row);rl->setContentsMargins(13,10,13,10);auto*n=label(number);n->setStyleSheet("color:#ef775f;font-weight:800;border:0");rl->addWidget(n);auto*copy=new QVBoxLayout;copy->setSpacing(1);auto*t=label("");t->setWordWrap(true);t->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Minimum);t->setStyleSheet("font-weight:800;border:0");auto*sub=label("");sub->setWordWrap(true);sub->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Minimum);sub->setStyleSheet("color:#71807c;border:0");copy->addWidget(t);copy->addWidget(sub);rl->addLayout(copy,1);l->addWidget(row);planRows.append(qMakePair(t,sub));};for(const QString &number:{QStringLiteral("01"),QStringLiteral("02"),QStringLiteral("03"),QStringLiteral("04")})addPlanRow(number);
     auto*variation=label("");variation->setStyleSheet("color:#71807c");
-    auto*buttons=new QHBoxLayout;auto*shuffle=button("Change chord order","routineDialogSecondary");auto*cancel=button("Not now","routineDialogSecondary");auto*start=button("Start the full plan  →","routineDialogPrimary");start->setDefault(true);for(auto*b:{shuffle,cancel,start}){b->setMinimumHeight(42);b->setMinimumWidth(132);}buttons->addWidget(variation);buttons->addWidget(shuffle);buttons->addStretch();buttons->addWidget(cancel);buttons->addWidget(start);l->addLayout(buttons);
+    l->addWidget(variation);
+    auto*buttons=new QHBoxLayout;auto*shuffle=button("Change chord order","routineDialogSecondary");auto*cancel=button("Not now","routineDialogSecondary");auto*start=button("Start the full plan  →","routineDialogPrimary");start->setDefault(true);const int actionHeight=routineMetrics.height()+22;for(auto*b:{shuffle,cancel,start}){b->setMinimumHeight(actionHeight);b->setMinimumWidth(110);b->setSizePolicy(QSizePolicy::Minimum,QSizePolicy::Fixed);}buttons->addWidget(shuffle);buttons->addStretch();buttons->addWidget(cancel);buttons->addWidget(start);l->addLayout(buttons);
     const QString secondaryStyle="QPushButton{color:#244d45;background:#fffefa;border:1px solid #aebdb8;border-radius:8px;padding:8px 13px;font-weight:700}QPushButton:hover{background:#eef7f4;border-color:#2d7d70}";
     for(auto*b:{previousDay,todayButton,nextDay,shuffle,cancel})b->setStyleSheet(secondaryStyle);start->setStyleSheet("QPushButton{color:white;background:#2d7d70;border:1px solid #205e54;border-radius:8px;padding:8px 16px;font-weight:800}QPushButton:hover{background:#235f56}");
     const auto refresh=[&]{const auto theme=dailyRoutineTheme(viewedDate);head->setText(viewedDate.toString("ddd, MMM d, yyyy"));todayButton->setEnabled(viewedDate!=today);planRows[0].first->setText(theme.keyName+" warm-up · 3 min");planRows[0].second->setText("Right hand → left hand → together");planRows[1].first->setText(theme.keyName+QString(" chord drill · pattern %1 · 4 min").arg(viewedVariation+1));planRows[1].second->setText("Wait mode checks every note in each chord");planRows[2].first->setText(earFocusName(theme.earFocus)+" · 2 min");planRows[2].second->setText("The prompts are hidden until you find them");const QString song=theme.useOde?"Ode to Joy":"Morning Light";planRows[3].first->setText(song+" in "+theme.keyName+" · 5 min");planRows[3].second->setText("Right hand → left hand → together");variation->setText(QString("Chord pattern %1 of 3").arg(viewedVariation+1));start->setText(viewedDate==today?"Start today's plan  →":"Start this plan  →");};
@@ -3050,7 +3121,7 @@ void MainWindow::loadRoutineStep(int step){
     };
     step=qBound(0,step,stages.size()-1);const auto &stage=stages[step];m_routineStep=step;
     m_earTraining=false;m_synth.stopSequence();setMode(Mode::Wait);
-    if(stage.type=="scale")setSong("Daily "+theme.keyName+" warm-up",transposed(MusicDocument::scaleRoutine(),theme.transpose),stage.tempo);
+    if(stage.type=="scale")setSong("Daily "+theme.keyName+" warm-up",MusicDocument::scaleRoutine(theme.transpose),stage.tempo);
     else if(stage.type=="chords")setSong("Daily "+theme.keyName+" chord drill",transposed(MusicDocument::chordRoutine(m_routineVariation),theme.transpose),stage.tempo);
     else if(stage.type=="ear")setSong("Ear training — find the sound",{},stage.tempo);
     else {const QString songName=theme.useOde?"Ode to Joy":"Morning Light";const auto song=theme.useOde?MusicDocument::odeToJoy():MusicDocument::morningLight();setSong(songName+" — "+theme.keyName,transposed(song,theme.transpose),stage.tempo);}
@@ -3086,6 +3157,6 @@ void MainWindow::startEarTrainingRound(){
 void MainWindow::showNotice(const QString&text,bool warning){m_noticeText->setText(text);m_notice->setProperty("warning",warning);m_notice->show();}
 void MainWindow::toast(const QString&text){statusBar()->show();statusBar()->showMessage(text,3500);QTimer::singleShot(3600,statusBar(),&QStatusBar::hide);}
 
-void MainWindow::keyPressEvent(QKeyEvent*e){if(e->isAutoRepeat()){e->accept();return;}if(m_keyMap.contains(e->key())&&!qobject_cast<QLineEdit*>(focusWidget())){userNoteOn(m_keyMap[e->key()],100);e->accept();return;}if(e->key()==Qt::Key_Space&&!qobject_cast<QLineEdit*>(focusWidget())){togglePlayback();e->accept();return;}if(e->key()==Qt::Key_R&&!qobject_cast<QLineEdit*>(focusWidget())){toggleRecord();e->accept();return;}if(e->key()==Qt::Key_Escape){stopPlayback(false);if(m_recording)finishRecording();m_synth.allOff();e->accept();return;}QMainWindow::keyPressEvent(e);}
+void MainWindow::keyPressEvent(QKeyEvent*e){if(e->isAutoRepeat()){e->accept();return;}if(m_keyMap.contains(e->key())&&!qobject_cast<QLineEdit*>(focusWidget())){userNoteOn(m_keyMap[e->key()],100);e->accept();return;}if(e->key()==Qt::Key_Space&&!qobject_cast<QLineEdit*>(focusWidget())){togglePlayback();e->accept();return;}if(e->key()==Qt::Key_R&&!qobject_cast<QLineEdit*>(focusWidget())){toggleRecord();e->accept();return;}if(e->key()==Qt::Key_Escape){stopPlayback(false);if(m_recording)finishRecording();if(m_mode==Mode::Free&&m_freePlayEditBeat>=0)finishFreePlayEditing();m_synth.allOff();e->accept();return;}QMainWindow::keyPressEvent(e);}
 void MainWindow::keyReleaseEvent(QKeyEvent*e){if(e->isAutoRepeat()){e->accept();return;}if(m_keyMap.contains(e->key())){userNoteOff(m_keyMap[e->key()]);e->accept();return;}QMainWindow::keyReleaseEvent(e);}
-void MainWindow::closeEvent(QCloseEvent*e){if(m_recording){auto r=QMessageBox::question(this,"Recording in progress","Stop recording and close VArpeggio?");if(r!=QMessageBox::Yes){e->ignore();return;}finishRecording();}QSettings settings("Voncloft","VArpeggio");settings.setValue("ui/mainWindowGeometry",saveGeometry());settings.setValue("ui/mainWindowState",saveState());settings.setValue("ui/mainWindowMaximized",isMaximized());if(m_midiOutputCheck&&m_midiOutputCheck->isChecked())settings.setValue("midi/useOutput",true);settings.sync();m_sourcePlayer->stop();m_midi.stop();m_midiOutput.allNotesOff();m_midiOutput.close();m_synth.allOff();e->accept();}
+void MainWindow::closeEvent(QCloseEvent*e){if(m_recording){auto r=QMessageBox::question(this,"Recording in progress","Stop recording and close VArpeggio?");if(r!=QMessageBox::Yes){e->ignore();return;}finishRecording();}QSettings settings("Voncloft","VArpeggio");settings.setValue("ui/mainWindowGeometry",saveGeometry());settings.setValue("ui/mainWindowState",saveState());settings.setValue("ui/mainWindowMaximized",isMaximized());settings.setValue("practice/showNoteNames",m_noteNames&&m_noteNames->isChecked());settings.setValue("practice/showFingering",m_fingerNumbers&&m_fingerNumbers->isChecked());if(m_midiOutputCheck&&m_midiOutputCheck->isChecked())settings.setValue("midi/useOutput",true);settings.sync();m_sourcePlayer->stop();m_midi.stop();m_midiOutput.allNotesOff();m_midiOutput.close();m_synth.allOff();e->accept();}
