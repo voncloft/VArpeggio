@@ -59,18 +59,20 @@ protected:
 private:
     enum class Mode { Wait, Listen, Follow, Free };
     enum class TranscriptionMode { Automatic, VisualOnly, AudioOnly };
-    struct PracticeGroup { double start; QSet<int> notes; };
+    struct PracticeGroup { double start; QSet<int> notes; int pedalAction = -1; };
 
     QWidget *buildHeader();
     QWidget *buildSidebar();
     QWidget *buildWorkspace();
     QWidget *makeCard(const QString &objectName = {});
     void buildMenus();
+    void showHelpManual();
     void applyStyle();
     void connectUi();
 
     void setMode(Mode mode);
-    void setSong(const QString &title, const QVector<NoteEvent> &notes, int tempo = 96);
+    void setSong(const QString &title, const QVector<NoteEvent> &notes, int tempo = 96,
+                 const QVector<PedalEvent> &pedals = {});
     void setHandFilter(int filter);
     void rebuildPractice();
     void updateExpected();
@@ -120,6 +122,18 @@ private:
     void loadRoutineStep(int step);
     void finishRoutinePlan();
     void restartCompletedPracticePass();
+    bool drillActive() const;
+    QVector<int> drillGroupIndexes() const;
+    QPair<double,double> drillRangeForBeat(double beat) const;
+    void toggleMeasureDrill(double startBeat, double endBeat, int measureNumber);
+    QString drillMeasureLabel() const;
+    void clearMeasureDrill(bool announce = true);
+    void restartDrillPass(bool announce = false);
+    void rewindWaitMeasureForPenalty(const QSet<int> &releaseNotes, const QString &reason);
+    void rewindWaitMeasureAfterMistake(int wrongNote);
+    void rewindWaitMeasureAfterIncompleteChord();
+    bool expectedPedalDown(double beat) const;
+    int pedalInstructionAt(double beat) const;
     void startEarTrainingRound();
     void playEarTrainingPrompt();
     void showNotice(const QString &text, bool warning = false);
@@ -128,6 +142,7 @@ private:
     Mode m_mode = Mode::Wait;
     QVector<NoteEvent> m_notes;
     QVector<double> m_keyboardReleaseBeats;
+    QVector<PedalEvent> m_songPedals;
     QString m_title = "Morning Light";
     int m_tempo = 96;
     int m_handFilter = -1;
@@ -153,7 +168,21 @@ private:
 
     QVector<PracticeGroup> m_groups;
     int m_groupIndex = 0;
+    double m_drillStart = -1;
+    double m_drillEnd = -1;
+    QMap<int,QPair<double,double>> m_drillMeasures;
+    int m_drillMeasure = 0;
+    int m_drillLastMeasure = 0;
+    int m_drillPass = 0;
+    int m_drillPassMistakes = 0;
+    bool m_cleanRetryRequired = false;
+    bool m_chordAttemptPending = false;
+    bool m_pedalReleaseRequired = false;
+    QElapsedTimer m_chordAttemptClock;
+    bool m_pedalAttemptPending = false;
+    QElapsedTimer m_pedalAttemptClock;
     QSet<int> m_matched;
+    QSet<int> m_wrongHeldNotes;
     int m_attempts = 0, m_correct = 0, m_streak = 0, m_bestStreak = 0;
     QSet<int> m_heldNotes;
     QSet<int> m_sustainedNotes;
@@ -213,6 +242,7 @@ private:
     QPushButton *m_recordButton = nullptr;
     QPushButton *m_freeEditButton = nullptr;
     QPushButton *m_freeClearButton = nullptr;
+    QPushButton *m_drillButton = nullptr;
     QWidget *m_scoreHistoryRow = nullptr;
     QWidget *m_practiceSection = nullptr;
     QScrollBar *m_scoreHistoryBar = nullptr;

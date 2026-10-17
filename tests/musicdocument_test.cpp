@@ -88,6 +88,26 @@ int main(int argc, char **argv) {
     for(const auto &note:fMajorRoutine)if(note.hand==Hand::Right&&note.start<4.0)fRight.append(note.finger);
     ok &= check(fRight==QVector<int>({1,2,3,4,1,2,3,4}),"F-major lesson uses the conventional fourth-finger crossing");
 
+    const auto arpeggio=MusicDocument::arpeggioRoutine();
+    ok &= check(arpeggio.size()==14,"daily arpeggio supplies a complete up-and-down figure for both hands");
+    const auto inversions=MusicDocument::inversionRoutine();QSet<int> inversionStarts;for(const auto &note:inversions)inversionStarts.insert(qRound(note.start*100));
+    ok &= check(inversions.size()==24&&inversionStarts.size()==4,"daily inversion lesson covers four chord positions with both hands");
+    const auto cadence=MusicDocument::cadenceRoutine(0,1);QSet<int> cadenceStarts;for(const auto &note:cadence)cadenceStarts.insert(qRound(note.start*100));
+    ok &= check(cadence.size()==32&&cadenceStarts.size()==16,"daily broken cadence plays I-IV-V-I as separate chord tones");
+    const auto fallingCadence=MusicDocument::cadenceRoutine(0,2);
+    ok &= check(cadence.size()==fallingCadence.size()&&cadence[0].note!=fallingCadence[0].note,
+                "daily cadence selections generate distinct rising and falling patterns");
+    const auto pedalNotes=MusicDocument::pedalChangeRoutine();const auto pedalChanges=MusicDocument::pedalChangeEvents();
+    ok &= check(pedalNotes.size()==24&&pedalChanges.size()==8&&pedalChanges.first().down&&!pedalChanges.last().down,"daily pedal lesson pairs four harmonies with exact press and release instructions");
+    const auto aMinorScale=MusicDocument::scaleRoutine(9,true);QSet<int> aMinorPitchClasses;for(const auto &note:aMinorScale)aMinorPitchClasses.insert((note.note%12+12)%12);
+    ok &= check(aMinorPitchClasses==QSet<int>({9,11,0,2,4,5,8}),"minor daily scale uses one complete harmonic-minor collection");
+    const auto aMinorArpeggio=MusicDocument::arpeggioRoutine(9,true);QSet<int> aMinorArpeggioClasses;for(const auto &note:aMinorArpeggio)aMinorArpeggioClasses.insert((note.note%12+12)%12);
+    ok &= check(aMinorArpeggioClasses==QSet<int>({9,0,4}),"minor daily arpeggio uses the minor third instead of silently reverting to major");
+    const auto aMinorInversions=MusicDocument::inversionRoutine(9,true);QSet<int> aMinorInversionClasses;for(const auto &note:aMinorInversions)aMinorInversionClasses.insert((note.note%12+12)%12);
+    ok &= check(aMinorInversionClasses==QSet<int>({9,0,4}),"minor daily inversions remain minor in every position");
+    const auto aMinorCadence=MusicDocument::cadenceRoutine(9,0,true);QSet<int> aMinorCadenceClasses;for(const auto &note:aMinorCadence)aMinorCadenceClasses.insert((note.note%12+12)%12);
+    ok &= check(aMinorCadenceClasses.contains(0)&&aMinorCadenceClasses.contains(8)&&aMinorCadenceClasses.contains(9),"minor daily cadence uses i-iv-V-i harmony");
+
     const auto morning=MusicDocument::morningLight();QVector<int> morningBassPitches,morningBassFingers;
     for(const auto &note:morning)if(note.hand==Hand::Left){morningBassPitches.append(note.note);morningBassFingers.append(note.finger);}
     ok &= check(morningBassPitches==QVector<int>({48,48,45,43,48,45}),"Morning Light keeps its authored bass line");
@@ -99,8 +119,10 @@ int main(int argc, char **argv) {
     QFile midiFile(midi);midiFile.open(QIODevice::ReadOnly);const QByteArray midiBytes=midiFile.readAll();
     ok &= check(midiBytes.contains(QByteArray{"\xb0\x40\x7f",3})&&midiBytes.contains(QByteArray{"\xb0\x40\x00",3}),"MIDI preserves sustain-pedal CC64 down and release");
     QVector<NoteEvent> loaded;
-    ok &= check(MusicDocument::importFile(midi, loaded, title, tempo, &error), "read MIDI");
+    QVector<PedalEvent> importedMidiPedals;
+    ok &= check(MusicDocument::importFile(midi, loaded, title, tempo, &error,nullptr,nullptr,nullptr,nullptr,&importedMidiPedals), "read MIDI");
     ok &= check(loaded.size() == source.size(), "MIDI preserves note count");
+    ok &= check(importedMidiPedals.size()==2&&importedMidiPedals.first().down&&!importedMidiPedals.last().down&&qAbs(importedMidiPedals.first().beat-.25)<.001&&qAbs(importedMidiPedals.last().beat-2.75)<.001,"MIDI import restores CC64 pedal timing for practice validation");
 
     const QString duplicateMidi=temp.filePath("duplicate-unison.mid");
     const QVector<NoteEvent> duplicateUnison{{60,0,1,72,Hand::Left},{60,0,1,104,Hand::Right}};
@@ -150,18 +172,21 @@ int main(int argc, char **argv) {
 <work><work-title>Detailed rhythm test</work-title></work>
 <part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list>
 <part id="P1"><measure number="1"><attributes><divisions>8</divisions><staves>2</staves></attributes>
-<direction><sound tempo="110"/></direction>
+<direction><direction-type><pedal type="start"/></direction-type><sound tempo="110"/></direction>
 <note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration><voice>1</voice><type>eighth</type><staff>1</staff></note>
 <note><pitch><step>D</step><octave>4</octave></pitch><duration>2</duration><voice>1</voice><type>16th</type><tie type="start"/><staff>1</staff></note>
 <note><pitch><step>D</step><octave>4</octave></pitch><duration>2</duration><voice>1</voice><type>16th</type><tie type="stop"/><staff>1</staff></note>
 <backup><duration>8</duration></backup>
 <note><pitch><step>C</step><octave>3</octave></pitch><duration>8</duration><voice>2</voice><type>quarter</type><staff>2</staff></note>
+<direction><direction-type><pedal type="stop"/></direction-type></direction>
 </measure></part></score-partwise>)XML");
     detailedFile.close();
     loaded.clear(); tempo = 72; title.clear();
-    ok &= check(MusicDocument::importFile(detailedXml, loaded, title, tempo, &error), "read detailed MusicXML");
+    QVector<PedalEvent> importedXmlPedals;
+    ok &= check(MusicDocument::importFile(detailedXml, loaded, title, tempo, &error,nullptr,nullptr,nullptr,nullptr,&importedXmlPedals), "read detailed MusicXML");
     ok &= check(title == "Detailed rhythm test" && tempo == 110, "MusicXML preserves title and tempo");
     ok &= check(loaded.size() == 3, "MusicXML merges tied fragments without losing both staves");
+    ok &= check(importedXmlPedals.size()==2&&importedXmlPedals.first().down&&!importedXmlPedals.last().down,"MusicXML imports written pedal press and release marks");
     auto durationFor=[&](int midi){for(const auto &note:loaded)if(note.note==midi)return note.duration;return -1.0;};
     ok &= check(qAbs(durationFor(60) - .5) < .001, "eighth-note duration is preserved");
     ok &= check(qAbs(durationFor(62) - .5) < .001, "tied 16th notes become one sustained note");

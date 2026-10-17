@@ -4,7 +4,8 @@ VArpeggio is a native Qt 6 piano practice, performance, recording, and notation 
 
 ## Main features
 
-- **Wait mode:** playback advances only while the correct key or complete chord is held for the written duration; repeated notes require a fresh key press unless they are tied.
+- **Built-in Help Manual:** open the searchable, task-organized complete guide with the header **?** button, **Help → VArpeggio Help Manual**, or **F1**. It documents every practice mode, control, learning aid, MIDI route, editor command, import/export format, transcription tool, remembered setting, shortcut, and current limitation in an explicit high-contrast light interface.
+- **Wait mode:** playback advances only while the correct key or exact complete chord is held for the written duration; repeated notes require a fresh key press unless they are tied. A wrong note, incomplete chord, extra chord tone, or early chord-key release immediately restarts only its current measure and requires a clean replay. A 500 ms chord-entry window allows real fingers to land without accepting missing tones. In Wait and daily score practice only, click live-notation measures to toggle them in or out of a drill and double-click to clear the complete selection.
 - **Listen:** plays the generated notes represented on the live staff without requiring keyboard input.
 - **Play Along:** follows the score clock while showing the current notes, keyboard keys, and falling-note display.
 - **Free Play:** immediately displays played notes on the grand staff, full 88-key keyboard, and optional falling-note view. Recording is optional.
@@ -97,6 +98,62 @@ Soundtrack-only polyphonic transcription remains experimental. Clean solo piano 
 - Window size, position, maximized state, app volume, sidebar state, and the **Use keyboard MIDI sound** selection are remembered between sessions.
 
 ## Changelog
+
+### 0.2.45 — 2026-10-17
+
+- Expanded all seven Daily Practice chapters into the same right-hand, left-hand, then together sequence. Scales, arpeggios, inversions, cadence, pedal changes, ear training, and repertoire now form 21 explicit guided steps instead of combining or skipping hands in some chapters. Pedal work remains its own chapter rather than being folded into cadence.
+- Added fully separate minor-key days to the date rotation. Every one of the 21 steps on a minor day uses minor material—including harmonic-minor scales, minor arpeggios and inversions, a minor-key `i–iv–V–i` cadence, pedal harmony, and minor-mode repertoire—while major days remain entirely major.
+- Split ear training into a right-hand register, a left-hand register, and a combined prompt spanning both hands.
+- Fixed the Daily Plan cadence-pattern control so it gives immediate named feedback and the selected block, rising broken, or falling broken pattern is carried into all three cadence steps.
+
+### 0.2.44 — 2026-10-17
+
+- Expanded Daily Practice from the original scale/chord/ear/repertoire loop into ten distinct guided steps: scale and contrary motion, right- and left-hand arpeggios, chord inversions, an I–IV–V–I cadence with rotating block or broken-chord patterns, exact pedal changes, ear training, separate-hand repertoire, and the complete piece.
+- Added real generated lesson material for arpeggios, root/first/second/octave inversions, cadences, broken chords, and harmony-by-harmony `Ped.` / `*` changes. These are playable Wait-mode exercises with the same fingering, exact-key, measure-restart, and pedal checks as other lessons.
+- Updated the Daily Plan dialog and in-app Help Manual so the additional practice categories are visible before starting instead of being hidden behind generic warm-up and chord-drill labels.
+
+### 0.2.43 — 2026-10-17
+
+- Added exact sustain-pedal teaching to Wait mode and Daily Practice. An unnecessary press, a missing `Ped.` press, an early release, or holding past `*` now fails the attempt and restarts only the current measure. Built-in lessons without pedal marks therefore require the pedal to remain unused.
+- MIDI CC64 and MusicXML pedal marks are now imported into the live score and practice rules. The active `Ped.` or `*` instruction is highlighted and named in the coach prompt.
+- Free Play remains non-punitive: pedal use is recorded at its performed timing and engraved as `Ped.` and `*`.
+
+### 0.2.42 — 2026-10-17
+
+- Made Wait/daily-practice chord input exact. Once the first required chord key is pressed, the remaining written tones must be physically down within a 500 ms human-entry window; sustain alone cannot substitute for a missing held key. Missing a chord tone, pressing an extra pitch, or releasing any required chord key before the written duration completes discards partial credit and restarts only the current measure.
+
+### 0.2.41 — 2026-10-17
+
+- Added a complete searchable Help Manual inside the application. The header **?** button, **Help → VArpeggio Help Manual**, and **F1** open a task-organized guide covering the complete interface and every user-facing practice, MIDI, notation, fingering, recording, editing, import, export, PDF, media, Director, experimental transcription, setting, shortcut, troubleshooting, and licensing function.
+- Gave the manual an explicit high-contrast light palette for its search field, topic list, article pane, scrollbars, and Close button so KDE themes cannot produce black controls, dark-on-dark text, or unreadable selected items.
+
+### 0.2.40 — 2026-10-17
+
+- Fixed the wrong-note rewind in measures after the first. The meter helper returns a measure's start and length; the penalty now correctly searches through `start + length`, so a mistake in measure 2 or later returns to that measure's first playable attack instead of remaining at the failed note.
+
+### 0.2.39 — 2026-10-17
+
+- Strengthened the Wait/daily-practice wrong-note penalty: an incorrect pitch now immediately rewinds the playhead and expected notes to the first playable attack of the current measure, clears partial chord credit and the streak, and requires the wrong key to be released before the entire measure is replayed cleanly. Accuracy and drill-pass mistake totals still record the miss.
+
+### 0.2.38 — 2026-10-17
+
+- Made drill measures independently selectable. A single click toggles only that measure, so a selection of measures 1 and 2 can become 2 and 3 by clicking 1 and then 3. Double-click still clears the whole selection, and nonadjacent selected measures play in order while unselected gaps are skipped.
+
+### 0.2.37 — 2026-10-17
+
+- Added a clean-retry penalty for wrong notes in Wait mode and daily score practice. A wrong key freezes progression, resets the streak, lowers accuracy, names the played and expected notes, and must be released before the target is replayed cleanly. Drill mode also counts mistakes per pass without forcing the player back to the beginning for a single slip.
+
+### 0.2.36 — 2026-10-17
+
+- Replaced the outlined drill rectangle with a soft, borderless tint across the selected measure or multi-measure span. The drill remains obvious without boxing in the staff or competing with notes and fingering.
+
+### 0.2.35 — 2026-10-17
+
+- Extended drills to full multi-measure sections in Wait mode and daily score practice only. Click a measure to start, click any earlier or later measure to include the complete range between them, and double-click to cancel; Free Play, Listen, Play Along, ear training, and score editing retain their normal behavior.
+
+### 0.2.34 — 2026-10-17
+
+- Added persistent measure drills to Wait mode and daily-plan score practice. Double-click any live-notation measure to highlight it and repeat only that measure; the drill tracks its own passes, stays active through restarts and hand changes, and ends by double-clicking the same measure or choosing **End drill**. Meter changes are respected, and finishing a drill pass does not falsely complete a daily-plan step.
 
 ### 0.2.33 — 2026-10-17
 

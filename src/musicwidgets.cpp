@@ -37,6 +37,20 @@ QPair<double,double> measureAt(QVector<TimeSignatureEvent> signatures,double bea
     const double local=qMax(0.0,beat-active.beat);
     return {active.beat+std::floor((local+1e-6)/length)*length,length};
 }
+int measureOrdinalAt(QVector<TimeSignatureEvent> signatures,double beat){
+    if(signatures.isEmpty())signatures.append({0.0,4,4});
+    std::sort(signatures.begin(),signatures.end(),[](const auto&a,const auto&b){return a.beat<b.beat;});
+    if(signatures.first().beat>.001)signatures.prepend({0.0,4,4});
+    int number=1;
+    for(int index=0;index<signatures.size();++index){
+        const auto &signature=signatures[index];
+        const double length=qMax(.125,signature.beats*4.0/qMax(1,signature.beatType));
+        const double next=index+1<signatures.size()?signatures[index+1].beat:std::numeric_limits<double>::max();
+        if(beat<next-.001)return number+qMax(0,int(std::floor((beat-signature.beat+1e-6)/length)));
+        number+=qMax(0,int(qCeil((next-signature.beat-.001)/length)));
+    }
+    return number;
+}
 int staffDiatonicIndex(int midi,int fifths,AccidentalMark accidental){static const int sharpStep[]={0,0,1,1,2,3,3,4,4,5,5,6};static const int flatStep[]={0,1,1,2,2,3,4,4,5,5,6,6};const int pitch=((midi%12)+12)%12;const bool useFlats=accidental==AccidentalMark::Flat||(accidental!=AccidentalMark::Sharp&&fifths<0);return (midi/12-1)*7+(useFlats?flatStep[pitch]:sharpStep[pitch]);}
 struct StaffPlacement { double y=0; int octaveDisplacement=0; };
 StaffPlacement staffPlacement(const NoteEvent &note,int fifths,double verticalOffset){
@@ -405,9 +419,22 @@ QString ScoreWidget::noteNameForBeat(int midi,double beat,AccidentalMark acciden
 void ScoreWidget::setRests(const QVector<StaffRestEvent>&rests){m_rests=rests;std::sort(m_rests.begin(),m_rests.end(),[](const auto&a,const auto&b){return a.beat<b.beat;});update();}
 void ScoreWidget::setRepeatEnds(const QVector<double>&beats){m_repeatEnds=beats;std::sort(m_repeatEnds.begin(),m_repeatEnds.end());update();}
 void ScoreWidget::setPedalEvents(const QVector<PedalEvent>&events){m_pedalEvents=events;std::sort(m_pedalEvents.begin(),m_pedalEvents.end(),[](const auto&a,const auto&b){return a.beat<b.beat;});update();}
+void ScoreWidget::setExpectedPedal(int state,double beat){m_expectedPedal=state;m_expectedPedalBeat=beat;update();}
 void ScoreWidget::setShowNames(bool s){m_showNames=s;update();}
 void ScoreWidget::setShowFingering(bool show){m_showFingering=show;updateGeometry();update();emit frameHeightHintChanged(recommendedFrameHeight());}
 void ScoreWidget::setHandFilter(int f){m_handFilter=f;updateGeometry();update();emit frameHeightHintChanged(recommendedFrameHeight());}
+void ScoreWidget::setDrillRange(double startBeat,double endBeat){
+    m_drillRanges.clear();if(startBeat>=0&&endBeat>startBeat)m_drillRanges.append({startBeat,endBeat});
+    update();
+}
+void ScoreWidget::setDrillRanges(const QVector<QPair<double,double>>&ranges){
+    m_drillRanges.clear();for(const auto &range:ranges)if(range.first>=0&&range.second>range.first)m_drillRanges.append(range);
+    std::sort(m_drillRanges.begin(),m_drillRanges.end(),[](const auto&a,const auto&b){return a.first<b.first;});
+    update();
+}
+QPair<double,double> ScoreWidget::measureRangeAt(double beat)const{return measureAt(m_timeSignatures,qMax(0.0,beat));}
+double ScoreWidget::measureEndAt(double beat)const{const auto measure=measureRangeAt(beat);return measure.first+measure.second;}
+int ScoreWidget::measureNumberAt(double beat)const{return measureOrdinalAt(m_timeSignatures,qMax(0.0,beat));}
 void ScoreWidget::paintEvent(QPaintEvent*){QPainter p(this);paintScore(p,rect());}
 
 QPair<double,double> ScoreWidget::viewRange() const {
@@ -443,6 +470,10 @@ QRectF ScoreWidget::canvasViewport(const QRectF &) const {
         // complete safe canvas instead of estimating from finger count alone.
         if(sizes.first>1||sizes.second>1)return QRectF(0.0,0.0,scoreCanvasWidth,scoreCanvasHeight);
     }
+    // Pedal teaching adds a compact PRESS/RELEASE cue beneath Ped. and *.
+    // Expose only the extra strip that notation needs instead of enlarging
+    // every score panel or changing either clef's fixed scale.
+    if(!m_pedalEvents.isEmpty())return QRectF(0.0,45.0,scoreCanvasWidth,325.0);
     return QRectF(0.0,45.0,scoreCanvasWidth,298.0);
 }
 
@@ -525,6 +556,24 @@ void ScoreWidget::paintScore(QPainter &p,const QRectF &target) const {
     const double musicLeft=225.0+qAbs(fifthsAt(m_keySignatures,startBeat))*8.0;
     const double musicRight=1000.0;
     const double scale=(musicRight-musicLeft)/window;
+    for(const auto &selectedRange:m_drillRanges){
+        const double shownStart=qMax(startBeat,selectedRange.first),shownEnd=qMin(startBeat+window,selectedRange.second);
+        if(shownEnd>shownStart+.001){
+            const double left=qAbs(shownStart-startBeat)<.001?musicLeft-18.0:musicLeft+(shownStart-startBeat)*scale-10.0;
+            const double right=musicLeft+(shownEnd-startBeat)*scale-10.0;
+            const QRectF drillHighlight(left,70+verticalOffset,qMax(18.0,right-left),130);
+            // A drill is a highlighted span of music, not another box around
+            // the staff. Use a borderless translucent wash between its
+            // barlines so notes, fingering, ledger lines, and clefs retain
+            // their normal visual hierarchy.
+            QLinearGradient wash(drillHighlight.topLeft(),drillHighlight.topRight());
+            wash.setColorAt(0.0,QColor(239,119,95,18));
+            wash.setColorAt(0.08,QColor(239,119,95,34));
+            wash.setColorAt(0.92,QColor(239,119,95,34));
+            wash.setColorAt(1.0,QColor(239,119,95,18));
+            p.fillRect(drillHighlight,wash);
+        }
+    }
     QVector<TimeSignatureEvent> signatures=m_timeSignatures;
     if(signatures.isEmpty()||signatures.first().beat>.001)signatures.prepend({0.0,4,4});
     int barNumber=1;
@@ -594,10 +643,14 @@ void ScoreWidget::paintScore(QPainter &p,const QRectF &target) const {
         double release=startBeat+window;bool released=false;
         for(int next=index+1;next<m_pedalEvents.size();++next)if(!m_pedalEvents[next].down){release=m_pedalEvents[next].beat;released=true;break;}
         if(release<startBeat-.001||event.beat>startBeat+window+.001)continue;
-        const double x1=musicLeft+(event.beat-startBeat)*scale,x2=musicLeft+(release-startBeat)*scale,y=286.0+verticalOffset;
-        p.setPen(QColor("#29433d"));
-        if(event.beat>=startBeat-.001){p.setFont(QFont("Noto Serif",13,QFont::Bold));p.drawText(QPointF(x1,y),"Ped.");}
-        if(released&&release<=startBeat+window+.001){p.setFont(QFont("Noto Serif",16,QFont::Bold));p.drawText(QPointF(x2-3,y+2),"*");}
+        const auto fingerSizes=maximumFingeringChordSizes(m_notes,m_handFilter);
+        const double pedalLane=m_showFingering&&fingerSizes.second>1?414.0:286.0+verticalOffset;
+        const double x1=musicLeft+(event.beat-startBeat)*scale,x2=musicLeft+(release-startBeat)*scale,y=pedalLane;
+        const bool pressExpected=m_expectedPedal==1&&qAbs(m_expectedPedalBeat-event.beat)<.02;
+        const bool releaseExpected=m_expectedPedal==0&&qAbs(m_expectedPedalBeat-release)<.02;
+        p.setPen(pressExpected||releaseExpected?QColor("#ef775f"):QColor("#29433d"));
+        if(event.beat>=startBeat-.001){p.setFont(QFont("Noto Serif",13,QFont::Bold));p.drawText(QPointF(x1,y),"Ped.");if(pressExpected){p.setFont(QFont("Manrope",8,QFont::Bold));p.drawText(QPointF(x1,y+14),"PRESS");}}
+        if(released&&release<=startBeat+window+.001){p.setFont(QFont("Noto Serif",16,QFont::Bold));p.drawText(QPointF(x2-3,y+2),"*");if(releaseExpected){p.setFont(QFont("Manrope",8,QFont::Bold));p.drawText(QPointF(x2-12,y+16),"RELEASE");}}
     }
     if(followed>=startBeat&&followed<=startBeat+window){
         const double playX=musicLeft+(followed-startBeat)*scale;
@@ -1094,6 +1147,17 @@ void ScoreWidget::mousePressEvent(QMouseEvent *event){
         if(x>=musicLeft&&x<=musicRight){const double beat=qMax(0.0,qRound((startBeat+(x-musicLeft)/scale)*8.0)/8.0);m_editCursorBeat=beat;update();emit editCursorChanged(beat);emit staffContextRequested(beat,event->globalPosition().toPoint());event->accept();return;}
     }
     QWidget::mousePressEvent(event);
+}
+
+void ScoreWidget::mouseDoubleClickEvent(QMouseEvent *event){
+    if(m_editEnabled||!m_seekEnabled||event->button()!=Qt::LeftButton||width()<=0||height()<=0){QWidget::mouseDoubleClickEvent(event);return;}
+    const double x=widgetToCanvas(event->position()).x();
+    const double startBeat=viewRange().first;
+    const double musicLeft=225.0+qAbs(fifthsAt(m_keySignatures,startBeat))*8.0,musicRight=1000.0;
+    if(x<musicLeft||x>musicRight){QWidget::mouseDoubleClickEvent(event);return;}
+    m_seekDragging=false;m_seekPreviewBeat=-1;update();
+    emit measureDrillCancelRequested();
+    event->accept();
 }
 
 void ScoreWidget::mouseMoveEvent(QMouseEvent *event){

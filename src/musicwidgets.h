@@ -25,9 +25,15 @@ public:
     void setRests(const QVector<StaffRestEvent> &rests);
     void setRepeatEnds(const QVector<double> &beats);
     void setPedalEvents(const QVector<PedalEvent> &events);
+    void setExpectedPedal(int state, double beat);
     void setShowNames(bool show);
     void setShowFingering(bool show);
     void setHandFilter(int filter);
+    void setDrillRange(double startBeat, double endBeat);
+    void setDrillRanges(const QVector<QPair<double,double>> &ranges);
+    QPair<double,double> measureRangeAt(double beat) const;
+    double measureEndAt(double beat) const;
+    int measureNumberAt(double beat) const;
     void paintScore(QPainter &p, const QRectF &target) const;
     int recommendedFrameHeight() const;
     const QVector<NoteEvent> &notes() const { return m_notes; }
@@ -43,11 +49,13 @@ signals:
     void seekPreviewChanged(double beat);
     void seekRequested(double beat);
     void historyStepRequested(int steps);
+    void measureDrillCancelRequested();
     void frameHeightHintChanged(int height);
 
 protected:
     void paintEvent(QPaintEvent *) override;
     void mousePressEvent(QMouseEvent *event) override;
+    void mouseDoubleClickEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
@@ -62,6 +70,8 @@ private:
     QVector<StaffRestEvent> m_rests;
     QVector<double> m_repeatEnds;
     QVector<PedalEvent> m_pedalEvents;
+    int m_expectedPedal = -1;
+    double m_expectedPedalBeat = -1;
     QSet<int> m_expected;
     double m_groupStart = 0;
     double m_playedBeat = -1;
@@ -76,6 +86,7 @@ private:
     double m_seekRangeStart = 0;
     double m_seekRangeWindow = 8;
     double m_editCursorBeat = -1;
+    QVector<QPair<double,double>> m_drillRanges;
     int m_handFilter = -1;
 };
 

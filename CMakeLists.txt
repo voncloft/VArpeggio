@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(VArpeggio VERSION 0.2.33 LANGUAGES CXX)
+project(VArpeggio VERSION 0.2.45 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -17,6 +17,7 @@ pkg_check_modules(SNDFILE REQUIRED IMPORTED_TARGET sndfile)
 qt_add_executable(varpeggio
     src/main.cpp
     src/mainwindow.h src/mainwindow.cpp
+    src/helpmanual.h src/helpmanual.cpp
     src/musicdocument.h src/musicdocument.cpp
     src/pdfrecognizer.h src/pdfrecognizer.cpp
     src/audiverisbridge.h src/audiverisbridge.cpp

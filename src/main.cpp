@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "helpmanual.h"
 #include "pdfrecognizer.h"
 #include "synthesizer.h"
 
@@ -24,7 +25,7 @@ static QIcon makeIcon() {
 
 int main(int argc,char*argv[]){
     QApplication app(argc,argv);app.setApplicationName("VArpeggio");app.setApplicationDisplayName("VArpeggio");app.setOrganizationName("Voncloft");app.setOrganizationDomain("voncloft.com");app.setDesktopFileName("com.voncloft.VArpeggio");app.setWindowIcon(makeIcon());
-    const QStringList args=app.arguments();const int shot=args.indexOf("--screenshot");const int chordDialogShot=args.indexOf("--chord-dialog-screenshot");const int routineDialogShot=args.indexOf("--routine-dialog-screenshot");const int open=args.indexOf("--open");const int importVideo=args.indexOf("--import-video");
+    const QStringList args=app.arguments();const int shot=args.indexOf("--screenshot");const int chordDialogShot=args.indexOf("--chord-dialog-screenshot");const int routineDialogShot=args.indexOf("--routine-dialog-screenshot");const int helpManualShot=args.indexOf("--help-manual-screenshot");const int open=args.indexOf("--open");const int importVideo=args.indexOf("--import-video");
     const int testFontSize=args.indexOf("--test-font-size");if(testFontSize>=0&&testFontSize+1<args.size()){bool ok=false;const int points=args[testFontSize+1].toInt(&ok);if(ok){QFont font=app.font();font.setPointSize(qBound(8,points,32));app.setFont(font);}}
     int screenshotDelay=1200;const int screenshotDelayArg=args.indexOf("--screenshot-delay");if(screenshotDelayArg>=0&&screenshotDelayArg+1<args.size()){bool ok=false;const int requested=args[screenshotDelayArg+1].toInt(&ok);if(ok)screenshotDelay=qBound(50,requested,30000);}
     const int transcribe=args.indexOf("--transcribe-falling");const int transcribeAudio=args.indexOf("--transcribe-audio");const int transcribePdf=args.indexOf("--transcribe-pdf");const int estimateTempo=args.indexOf("--estimate-tempo");const int renderWav=args.indexOf("--render-wav");const int renderVideo=args.indexOf("--render-video");const int renderDetector=args.indexOf("--render-detector");const int scoreShot=args.indexOf("--score-screenshot");
@@ -126,6 +127,9 @@ int main(int argc,char*argv[]){
         }
         fprintf(stderr,"Created %lld notes plus MIDI, detailed MusicXML, and playable PDF at %d BPM%s; audio agreement %.2f.\n",qint64(notes.size()),tempo,info.tempoEstimated?" (estimated)":"",info.audiovisualAgreement);return 0;
     }
+    if(helpManualShot>=0&&helpManualShot+1<args.size()){
+        HelpManualDialog dialog;dialog.show();QTimer::singleShot(screenshotDelay,&dialog,[&dialog,&app,path=args[helpManualShot+1]]{dialog.grab().save(path);dialog.close();app.quit();});return app.exec();
+    }
     if(shot>=0||chordDialogShot>=0||routineDialogShot>=0)app.setQuitOnLastWindowClosed(false);
     MainWindow window;if(open>=0&&open+1<args.size())window.openPath(args[open+1]);window.show();
     if(importVideo>=0&&importVideo+1<args.size()){int tempo=0;if(importVideo+2<args.size()&&!args[importVideo+2].startsWith("--")){bool ok=false;const int requested=args[importVideo+2].toInt(&ok);if(!ok){fprintf(stderr,"The optional BPM must be a number.\n");return 64;}tempo=qBound(30,requested,260);}if(!window.transcribeVideoPath(args[importVideo+1],tempo))return 5;}
@@ -138,6 +142,7 @@ int main(int argc,char*argv[]){
     }
     if(routineDialogShot>=0&&routineDialogShot+1<args.size()){
         QTimer::singleShot(0,&window,[&window]{for(auto *control:window.findChildren<QPushButton*>())if(control->text().contains("practice plan",Qt::CaseInsensitive)||control->toolTip().contains("practice plan",Qt::CaseInsensitive)){control->click();break;}});
+        if(args.contains("--cycle-cadence"))QTimer::singleShot(450,&window,[]{if(auto *dialog=QApplication::activeModalWidget())for(auto *control:dialog->findChildren<QPushButton*>())if(control->text()=="Change cadence pattern"){control->click();break;}});
         QTimer::singleShot(900,&window,[&app,path=args[routineDialogShot+1]]{if(auto *dialog=QApplication::activeModalWidget()){dialog->grab().save(path);dialog->close();}app.quit();});
     }
     return app.exec();

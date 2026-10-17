@@ -240,6 +240,16 @@ int main(int argc,char **argv){
     ok&=equals(suggested(phrase({96,100,103},Hand::Right)),{1,3,5},"highest-register C7-E7-G7 outline uses thumb-middle-pinky");
     ok&=equals(suggested(phrase({103,100,96},Hand::Right)),{5,3,1},"highest-register G7-E7-C7 descent mirrors the physical hand");
 
+    ScoreWidget meterDrill;
+    meterDrill.setTimeSignatures({{0.0,3,4},{6.0,4,4}});
+    const auto secondThreeFour=meterDrill.measureRangeAt(4.25);
+    ok&=check(qAbs(secondThreeFour.first-3.0)<.001&&qAbs(secondThreeFour.second-3.0)<.001,
+              "measure drill resolves a complete 3/4 measure");
+    ok&=check(qAbs(meterDrill.measureEndAt(4.25)-6.0)<.001,
+              "later-measure rewind converts start plus length into the true measure end");
+    ok&=check(meterDrill.measureNumberAt(4.25)==2&&meterDrill.measureNumberAt(6.0)==3,
+              "measure drill numbers bars correctly across a meter change");
+
     // An optional visual artifact exercises the default 61-key physical range
     // within the full 88-key renderer. Outer keys remain visible but inactive;
     // the centre chord verifies synchronized fingering badges.
@@ -253,6 +263,12 @@ int main(int argc,char **argv){
         ScoreWidget score;score.setNotes(notes);score.setKeySignatures({{0.0,3}});score.setShowNames(true);score.setShowFingering(true);score.setFollowBeat(0);score.resize(1100,440);
         QImage image(1100,440,QImage::Format_ARGB32_Premultiplied);image.fill(Qt::transparent);QPainter painter(&image);score.paintScore(painter,QRectF(0,0,1100,440));painter.end();
         ok&=check(image.save(QString::fromLocal8Bit(argv[2])),"dense left-hand fingering screenshot was saved");
+    }
+    if(argc>3){
+        auto notes=MusicDocument::odeToJoy();
+        ScoreWidget score;score.setNotes(notes);score.setShowNames(true);score.setShowFingering(true);score.setDrillRanges({{4.0,8.0},{12.0,16.0}});score.setFollowBeat(4.0);score.resize(2200,440);
+        QImage image(2200,440,QImage::Format_ARGB32_Premultiplied);image.fill(Qt::transparent);QPainter painter(&image);score.paintScore(painter,QRectF(0,0,2200,440));painter.end();
+        ok&=check(image.save(QString::fromLocal8Bit(argv[3])),"measure drill screenshot was saved");
     }
 
     if(!ok)return 1;

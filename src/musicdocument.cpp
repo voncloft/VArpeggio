@@ -704,13 +704,16 @@ QVector<NoteEvent> MusicDocument::odeToJoy() {
     return sortNotes(n);
 }
 
-QVector<NoteEvent> MusicDocument::scaleRoutine(int tonicSemitones) {
+QVector<NoteEvent> MusicDocument::scaleRoutine(int tonicSemitones,bool minor) {
     QVector<NoteEvent> n;
-    const int rightScale[] = {0,2,4,5,7,9,11,12,11,9,7,5,4,2,0};
-    // Contrary motion in C major does not mirror the semitone distances.
-    // The left hand descends C-B-A-G-F-E-D-C, staying on the same natural
-    // pitch collection as the ascending right hand.
-    const int leftScale[] = {0,-1,-3,-5,-7,-8,-10,-12,-10,-8,-7,-5,-3,-1,0};
+    const QVector<int> rightScale=minor
+        ?QVector<int>{0,2,3,5,7,8,11,12,11,8,7,5,3,2,0}
+        :QVector<int>{0,2,4,5,7,9,11,12,11,9,7,5,4,2,0};
+    // Contrary motion follows the same scale degrees below the tonic. Minor
+    // days use the harmonic-minor collection throughout the complete lesson.
+    const QVector<int> leftScale=minor
+        ?QVector<int>{0,-1,-4,-5,-7,-9,-10,-12,-10,-9,-7,-5,-4,-1,0}
+        :QVector<int>{0,-1,-3,-5,-7,-8,-10,-12,-10,-8,-7,-5,-3,-1,0};
     QVector<int> rightAscending{1,2,3,1,2,3,4,5};
     QVector<int> leftAscending{5,4,3,2,1,3,2,1};
     const int pitchClass=((tonicSemitones%12)+12)%12;
@@ -742,6 +745,32 @@ QVector<NoteEvent> MusicDocument::chordRoutine(int variation) {
     return sortNotes(n);
 }
 
+QVector<NoteEvent> MusicDocument::arpeggioRoutine(int tonicSemitones,bool minor) {
+    const QVector<int> pattern=minor?QVector<int>{0,3,7,12,7,3,0}:QVector<int>{0,4,7,12,7,4,0};QVector<NoteEvent> notes;
+    for(int index=0;index<pattern.size();++index){const double beat=index*.5;notes.append({48+tonicSemitones+pattern[index],beat,.42,78,Hand::Left});notes.append({60+tonicSemitones+pattern[index],beat,.42,92,Hand::Right});}
+    return sortNotes(notes);
+}
+
+QVector<NoteEvent> MusicDocument::inversionRoutine(int tonicSemitones,bool minor) {
+    const QVector<QVector<int>> positions=minor?QVector<QVector<int>>{{0,3,7},{3,7,12},{7,12,15},{12,15,19}}:QVector<QVector<int>>{{0,4,7},{4,7,12},{7,12,16},{12,16,19}};QVector<NoteEvent> notes;
+    for(int position=0;position<positions.size();++position){const double beat=position*2.0;for(Hand hand:{Hand::Left,Hand::Right}){const int base=(hand==Hand::Left?48:60)+tonicSemitones;for(int interval:positions[position])notes.append({base+interval,beat,1.6,hand==Hand::Left?78:92,hand});}}
+    return sortNotes(notes);
+}
+
+QVector<NoteEvent> MusicDocument::cadenceRoutine(int tonicSemitones,int variation,bool minor) {
+    const QVector<QVector<int>> harmony=minor?QVector<QVector<int>>{{0,3,7},{5,8,12},{7,11,14},{12,15,19}}:QVector<QVector<int>>{{0,4,7},{5,9,12},{7,11,14},{12,16,19}};QVector<NoteEvent> notes;
+    for(int chord=0;chord<harmony.size();++chord){const double baseBeat=chord*2.0;for(Hand hand:{Hand::Left,Hand::Right}){const int base=(hand==Hand::Left?48:60)+tonicSemitones;if(variation%3==0){for(int interval:harmony[chord])notes.append({base+interval,baseBeat,1.6,hand==Hand::Left?78:92,hand});}else{QVector<int> sequence=harmony[chord];if(variation%3==2)std::reverse(sequence.begin(),sequence.end());sequence.append(harmony[chord][1]);for(int index=0;index<sequence.size();++index)notes.append({base+sequence[index],baseBeat+index*.5,.42,hand==Hand::Left?78:92,hand});}}}
+    return sortNotes(notes);
+}
+
+QVector<NoteEvent> MusicDocument::pedalChangeRoutine(int tonicSemitones,bool minor) {
+    const QVector<QVector<int>> harmony=minor?QVector<QVector<int>>{{0,3,7},{5,8,12},{7,11,14},{0,3,7}}:QVector<QVector<int>>{{0,4,7},{5,9,12},{7,11,14},{0,4,7}};QVector<NoteEvent> notes;
+    for(int chord=0;chord<harmony.size();++chord){const double beat=chord*2.0;for(Hand hand:{Hand::Left,Hand::Right}){const int base=(hand==Hand::Left?48:60)+tonicSemitones+(chord==3?12:0);for(int interval:harmony[chord])notes.append({base+interval,beat,1.5,hand==Hand::Left?76:90,hand});}}
+    return sortNotes(notes);
+}
+
+QVector<PedalEvent> MusicDocument::pedalChangeEvents(){return {{0,true},{1.75,false},{2,true},{3.75,false},{4,true},{5.75,false},{6,true},{7.75,false}};}
+
 bool MusicDocument::importFile(const QString &path, QVector<NoteEvent> &notes, QString &title, int &tempo, QString *error,QVector<TimeSignatureEvent>*timeSignatures,QVector<double>*repeatEnds,QVector<KeySignatureEvent>*keySignatures,QVector<StaffRestEvent>*rests,QVector<PedalEvent>*pedals) {
     const QString ext = QFileInfo(path).suffix().toLower();
     QByteArray data;
@@ -754,8 +783,8 @@ bool MusicDocument::importFile(const QString &path, QVector<NoteEvent> &notes, Q
     }
     title = QFileInfo(path).completeBaseName();
     bool ok = false;
-    if (ext=="mid" || ext=="midi") ok = importMidi(data, notes, tempo, error);
-    else if (ext=="musicxml" || ext=="xml" || ext=="mxl") ok = importMusicXml(data, notes, tempo, title, error);
+    if (ext=="mid" || ext=="midi") ok = importMidi(data, notes, tempo, error, pedals);
+    else if (ext=="musicxml" || ext=="xml" || ext=="mxl") ok = importMusicXml(data, notes, tempo, title, error, pedals);
     else if (ext=="abc") ok = importAbc(data, notes, tempo, error);
     else if (ext=="json" || ext=="varpeggio") ok = importJson(data, notes, tempo, title, error,timeSignatures,repeatEnds,keySignatures,rests,pedals);
     else { setError(error, "This score format is not supported for note-aware import."); return false; }
@@ -763,12 +792,12 @@ bool MusicDocument::importFile(const QString &path, QVector<NoteEvent> &notes, Q
     return ok;
 }
 
-bool MusicDocument::importMidi(const QByteArray &data, QVector<NoteEvent> &notes, int &tempo, QString *error) {
+bool MusicDocument::importMidi(const QByteArray &data, QVector<NoteEvent> &notes, int &tempo, QString *error,QVector<PedalEvent> *pedals) {
     const auto *p = reinterpret_cast<const uchar*>(data.constData()); const int size=data.size();
     if (size<14 || QByteArray(data.constData(),4)!="MThd") { setError(error,"Not a valid MIDI file."); return false; }
     const quint32 headerLen=be32(p+4); if (headerLen<6 || 8+int(headerLen)>size) { setError(error,"Damaged MIDI header."); return false; }
     const int tracks=be16(p+10), division=be16(p+12); if (division<=0 || division&0x8000) { setError(error,"SMPTE MIDI timing is not supported."); return false; }
-    int pos=8+headerLen; struct Raw { int note, vel; qint64 start, end; }; QVector<Raw> raw;
+    int pos=8+headerLen; struct Raw { int note, vel; qint64 start, end; }; QVector<Raw> raw;QVector<QPair<qint64,bool>> rawPedals;
     quint32 firstTempo=500000;
     for (int tr=0; tr<tracks && pos+8<=size; ++tr) {
         if (QByteArray(data.constData()+pos,4)!="MTrk") break;
@@ -785,6 +814,7 @@ bool MusicDocument::importMidi(const QByteArray &data, QVector<NoteEvent> &notes
                 int key=((status&0x0f)<<8)|d1;
                 if(type==0x90 && d2>0) active[key].append({tick,d2});
                 else if(type==0x80 || (type==0x90&&d2==0)) { auto &stack=active[key]; if(!stack.isEmpty()){ auto start=stack.takeFirst(); raw<<Raw{d1,start.second,start.first,tick}; } }
+                else if(type==0xb0&&d1==64)rawPedals.append({tick,d2>=64});
             }
         }
         pos=end;
@@ -801,13 +831,15 @@ bool MusicDocument::importMidi(const QByteArray &data, QVector<NoteEvent> &notes
         else unique.append(event);
     }
     for(const auto &r:unique) if(r.end>r.start) notes<<NoteEvent{r.note,double(r.start)/division,qMax(.05,double(r.end-r.start)/division),r.vel,r.note<60?Hand::Left:Hand::Right};
+    if(pedals){pedals->clear();std::sort(rawPedals.begin(),rawPedals.end(),[](const auto&a,const auto&b){return a.first<b.first;});for(const auto &event:rawPedals){const PedalEvent converted{double(event.first)/division,event.second};if(pedals->isEmpty()||pedals->last().down!=converted.down)pedals->append(converted);}}
     refineMidiHandAssignment(notes);
     if(notes.isEmpty()) { setError(error,"No playable notes were found in this MIDI file."); return false; }
     return true;
 }
 
 bool MusicDocument::importMusicXml(const QByteArray &data, QVector<NoteEvent> &notes, int &tempo,
-                                   QString &title, QString *error) {
+                                   QString &title, QString *error,QVector<PedalEvent> *pedals) {
+    if(pedals)pedals->clear();
     QDomDocument doc; QString msg; int line=0,col=0;
     if(!doc.setContent(data,&msg,&line,&col)){ setError(error,QString("MusicXML error at %1:%2 — %3").arg(line).arg(col).arg(msg)); return false; }
     auto parts=doc.elementsByTagName("part"); if(parts.isEmpty()){ setError(error,"No MusicXML part was found."); return false; }
@@ -822,6 +854,12 @@ bool MusicDocument::importMusicXml(const QByteArray &data, QVector<NoteEvent> &n
             for(QDomNode n=measure.firstChild();!n.isNull();n=n.nextSibling()){
                 QDomElement e=n.toElement();
                 if(e.tagName()=="attributes"){ auto d=e.elementsByTagName("divisions"); if(!d.isEmpty()) divisions=qMax(1,d.at(0).toElement().text().toInt()); }
+                else if(e.tagName()=="direction"&&pedals){
+                    const double beat=qMax(partTime,cursor+e.firstChildElement("offset").text().toDouble()/divisions);
+                    const auto marks=e.elementsByTagName("pedal");
+                    for(int pedalIndex=0;pedalIndex<marks.size();++pedalIndex){const QString type=marks.at(pedalIndex).toElement().attribute("type").toLower();if(type=="start"||type=="resume")pedals->append({beat,true});else if(type=="stop"||type=="discontinue")pedals->append({beat,false});}
+                    const auto sounds=e.elementsByTagName("sound");for(int soundIndex=0;soundIndex<sounds.size();++soundIndex){const QString value=sounds.at(soundIndex).toElement().attribute("damper-pedal").toLower();if(value=="yes"||value=="1")pedals->append({beat,true});else if(value=="no"||value=="0")pedals->append({beat,false});}
+                }
                 else if(e.tagName()=="backup") cursor-=e.firstChildElement("duration").text().toDouble()/divisions;
                 else if(e.tagName()=="forward"){cursor+=e.firstChildElement("duration").text().toDouble()/divisions;maxCursor=qMax(maxCursor,cursor);}
                 else if(e.tagName()=="note"){
@@ -833,6 +871,7 @@ bool MusicDocument::importMusicXml(const QByteArray &data, QVector<NoteEvent> &n
             partTime=maxCursor;
         }
     }
+    if(pedals){std::sort(pedals->begin(),pedals->end(),[](const auto&a,const auto&b){return qAbs(a.beat-b.beat)<.001?int(a.down)<int(b.down):a.beat<b.beat;});QVector<PedalEvent> unique;for(const auto &event:*pedals)if(unique.isEmpty()||unique.last().down!=event.down)unique.append(event);*pedals=unique;}
     if(notes.isEmpty()){ setError(error,"No pitched notes were found in this MusicXML file."); return false; }
     return true;
 }

@@ -86,7 +86,12 @@ public:
     static QVector<double> keyboardReleaseBeats(const QVector<NoteEvent> &notes);
     static QVector<NoteEvent> morningLight();
     static QVector<NoteEvent> odeToJoy();
-    static QVector<NoteEvent> scaleRoutine(int tonicSemitones = 0);
+    static QVector<NoteEvent> scaleRoutine(int tonicSemitones = 0, bool minor = false);
+    static QVector<NoteEvent> arpeggioRoutine(int tonicSemitones = 0, bool minor = false);
+    static QVector<NoteEvent> inversionRoutine(int tonicSemitones = 0, bool minor = false);
+    static QVector<NoteEvent> cadenceRoutine(int tonicSemitones = 0, int variation = 0, bool minor = false);
+    static QVector<NoteEvent> pedalChangeRoutine(int tonicSemitones = 0, bool minor = false);
+    static QVector<PedalEvent> pedalChangeEvents();
     static QVector<NoteEvent> chordRoutine(int variation = 0);
 
     static bool importFile(const QString &path, QVector<NoteEvent> &notes,
@@ -134,9 +139,10 @@ public:
                                             TranscriptionInfo *info = nullptr);
 
 private:
-    static bool importMidi(const QByteArray &data, QVector<NoteEvent> &notes, int &tempo, QString *error);
+    static bool importMidi(const QByteArray &data, QVector<NoteEvent> &notes, int &tempo, QString *error,
+                           QVector<PedalEvent> *pedals);
     static bool importMusicXml(const QByteArray &data, QVector<NoteEvent> &notes, int &tempo,
-                               QString &title, QString *error);
+                               QString &title, QString *error, QVector<PedalEvent> *pedals);
     static bool importAbc(const QByteArray &data, QVector<NoteEvent> &notes, int &tempo, QString *error);
     static bool importJson(const QByteArray &data, QVector<NoteEvent> &notes, int &tempo,
                            QString &title, QString *error,
