@@ -81,6 +81,9 @@ public:
     // Infer the conventional key signature that best explains the pitch
     // collection. Positive values are sharps, negative values are flats.
     static int inferKeySignature(const QVector<NoteEvent> &notes);
+    // Release points for the on-screen physical keys. Tiny legato overlaps in
+    // exported MIDI remain audible but do not leave an old hand position lit.
+    static QVector<double> keyboardReleaseBeats(const QVector<NoteEvent> &notes);
     static QVector<NoteEvent> morningLight();
     static QVector<NoteEvent> odeToJoy();
     static QVector<NoteEvent> scaleRoutine(int tonicSemitones = 0);

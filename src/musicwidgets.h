@@ -29,6 +29,7 @@ public:
     void setShowFingering(bool show);
     void setHandFilter(int filter);
     void paintScore(QPainter &p, const QRectF &target) const;
+    int recommendedFrameHeight() const;
     const QVector<NoteEvent> &notes() const { return m_notes; }
     QString noteNameForBeat(int midi, double beat,
                             AccidentalMark accidental = AccidentalMark::Automatic) const;
@@ -42,6 +43,7 @@ signals:
     void seekPreviewChanged(double beat);
     void seekRequested(double beat);
     void historyStepRequested(int steps);
+    void frameHeightHintChanged(int height);
 
 protected:
     void paintEvent(QPaintEvent *) override;
@@ -83,6 +85,7 @@ public:
     explicit PianoWidget(QWidget *parent = nullptr);
     void setActive(int note, bool active);
     void setFingerHints(const QHash<int,int> &hints);
+    void setKeyRange(int low, int high);
     QSize sizeHint() const override { return {900, 168}; }
 
 signals:
@@ -102,7 +105,7 @@ private:
     QSet<int> m_active;
     QHash<int,int> m_fingerHints;
     int m_mouseNote = -1;
-    const int m_low = 21, m_high = 108;
+    int m_low = 36, m_high = 96;
 };
 
 class BubbleWidget : public QWidget {

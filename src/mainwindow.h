@@ -17,6 +17,7 @@
 
 class QButtonGroup;
 class QAudioOutput;
+class QAction;
 class QCheckBox;
 class QComboBox;
 class QFrame;
@@ -74,12 +75,15 @@ private:
     void rebuildPractice();
     void updateExpected();
     void updatePianoFingeringHints(double beat, const QSet<int> &preferredNotes = {});
+    void rebuildKeyboardReleaseBeats();
+    void refreshPlaybackPiano(double beat);
     void updateStats();
     void updateSongMeta();
     void changeTempo(int tempo);
     void updatePrimaryButton();
     void setExactScoreAvailable(const QString &label = QStringLiteral("Exact PDF"));
     QVector<NoteEvent> filteredNotes() const;
+    QSet<int> activeWaitAttackNotes() const;
 
     void userNoteOn(int note, int velocity);
     void userNoteOff(int note);
@@ -123,6 +127,7 @@ private:
 
     Mode m_mode = Mode::Wait;
     QVector<NoteEvent> m_notes;
+    QVector<double> m_keyboardReleaseBeats;
     QString m_title = "Morning Light";
     int m_tempo = 96;
     int m_handFilter = -1;
@@ -209,6 +214,7 @@ private:
     QPushButton *m_freeEditButton = nullptr;
     QPushButton *m_freeClearButton = nullptr;
     QWidget *m_scoreHistoryRow = nullptr;
+    QWidget *m_practiceSection = nullptr;
     QScrollBar *m_scoreHistoryBar = nullptr;
     QFrame *m_routineSession = nullptr;
     QLabel *m_routineStepLabel = nullptr;
@@ -229,6 +235,7 @@ private:
     QCheckBox *m_noteNames = nullptr;
     QCheckBox *m_fingerNumbers = nullptr;
     QCheckBox *m_bubbles = nullptr;
+    QAction *m_showPracticeSectionAction = nullptr;
     QCheckBox *m_metronome = nullptr;
     QCheckBox *m_sound = nullptr;
     QCheckBox *m_midiOutputCheck = nullptr;

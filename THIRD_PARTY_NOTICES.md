@@ -8,7 +8,35 @@ VArpeggio-specific source code remains separate from the following open-source c
 
 ## Bundled open-source library
 
-- **Verovio 6.3.0** — music-notation engraving library and Python binding, **LGPL-3.0-only**. The bundled wheel metadata and complete GPL/LGPL license texts are under `tools/python/verovio-6.3.0.dist-info/`. Source: <https://github.com/rism-digital/verovio>
+- **Verovio 6.3.0** — music-notation engraving library and Python binding, **LGPL-3.0-only**. The bundled wheel metadata and complete GPL/LGPL license texts are under `tools/python/verovio-6.3.0.dist-info/`. The exact source archive, replacement instructions, and corresponding-source offer are in `LICENSES/VEROVIO-SOURCE.md`. Source: <https://github.com/rism-digital/verovio/releases/tag/version-6.3.0>
+
+- **Verovio engraving fonts** — the bundled wheel contains unmodified Bravura, Gootville, Leipzig, Leland, Petaluma, and Liberation font data under the **SIL Open Font License 1.1**. Copyright, designer, source, and Reserved Font Name notices are in `LICENSES/VEROVIO-FONTS.md`; the complete license is in `LICENSES/OFL-1.1.txt`.
+
+## Adapted open-source algorithm
+
+- **PianoPlayer** — physical piano-fingering search by Marco Musy, **MIT License**. VArpeggio's native C++ fingering optimizer adapts its hand geometry, finger weights, black-key bias, movement-effort cost, and crossing constraints; no Python runtime is required. Source: <https://github.com/marcomusy/pianoplayer>
+
+MIT License
+
+Copyright (c) 2017 Marco Musy
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ## Linked frameworks and system libraries
 

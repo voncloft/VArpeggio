@@ -98,6 +98,87 @@ Soundtrack-only polyphonic transcription remains experimental. Clean solo piano 
 
 ## Changelog
 
+### 0.2.33 — 2026-10-17
+
+- Completed the public-release licensing bundle. VArpeggio now ships a human-readable inventory and the complete OFL-1.1 text for every engraving font embedded in Verovio, plus an exact Verovio 6.3.0 source archive link, replacement instructions, and a corresponding-source offer. These notices are installed with the application.
+
+### 0.2.32 — 2026-10-17
+
+- Corrected virtual-keyboard playback for legato MIDI exports. Short overlap tails remain audible, but old key highlights and finger badges now release at the next same-hand attack instead of accumulating into an impossible hand position at triplet and bar changes. During playback, a finger badge and its lit key now change on the same attack rather than showing the next badge early. Genuine long held tones remain highlighted.
+
+### 0.2.31 — 2026-10-17
+
+- Replaced the rigid middle-C MIDI hand split for cross-staff rolling textures. A short lower note that belongs to a nearby upper-hand pattern now stays with that hand when a substantially lower sustained bass is present. This preserves every imported note on the correct staff and prevents impossible wide left-hand assignments such as fingers 5 and 3 across an octave-plus span.
+
+### 0.2.30 — 2026-10-17
+
+- Collapsed duplicate same-key attacks from overlapping MIDI tracks or voices into one printed notehead and one finger number. Playback data remains untouched. Rapid neighboring attacks also receive separate fingering columns, so two valid `1` labels no longer merge visually into a nonexistent finger 11.
+
+### 0.2.29 — 2026-10-17
+
+- Eliminated the remaining edge clipping on dense vertical chord fingering. When a chord stack is present, the Grand Staff frame exposes the complete safe notation canvas so low ledger notes, stems, and the bottom finger digit—and the equivalent high right-hand case—remain fully visible.
+
+### 0.2.28 — 2026-10-17
+
+- Restored vertical fingering stacks for simultaneous chord notes and made the Grand Staff frame grow only by the height required for the largest active stack. Normal passages retain the compact frame; large chords no longer lose their outer finger numbers above or below the cropped canvas.
+- Added **Settings → Show Bubbles + Live Coach**. The entire practice section—including its minimized header—can be hidden to reclaim space and restored from the menu at any time; the choice is remembered across launches.
+
+### 0.2.27 — 2026-10-17
+
+- Added fingering-aware horizontal paging for dense scores. Fingering remains on one unclipped row per hand; when neighboring chord groups would collide, the score automatically shows fewer complete measures and gives the printed numbers more horizontal room instead of stacking them vertically.
+
+### 0.2.26 — 2026-10-17
+
+- Changed simultaneous chord fingering from a vertical stack to a horizontal, pitch-ordered row. Right-hand chord fingers remain above the treble staff, left-hand fingers remain below the bass staff, and edge chords shift inward to keep every number visible.
+
+### 0.2.25 — 2026-10-17
+
+- Kept stacked left-hand fingering in a dedicated lane below the bass staff. Dyads and chords no longer lose their upper finger number among the staff lines, and the complete stack stays inside the score canvas.
+- Added a rendered A-major regression check with sustained left-hand dyads so both `1` and `5` remain visibly separated at the same compact score scale used by the daily plan.
+
+### 0.2.24 — 2026-10-17
+
+- Removed the daily chord drill's hard-coded `5` on every left-hand bass note. All three chord-drill variations now enter the same PianoPlayer-based phrase optimizer used by Wait, Listen, Play Along, Free Play, imports, and the synchronized keyboard hints.
+- Removed the separate fingering shortcut from the Chord Practice dialog as well. Generated exercises now share one inference path in every mode, and phrase detection uses the silence after a key release so sustained, spaced bass notes are analyzed as one physical hand movement. Explicit fingering authored in MusicXML, saved projects, or a curated lesson remains authoritative.
+
+### 0.2.23 — 2026-10-16
+
+- Replaced the experimental chain of fingering corrections with one score-wide physical optimizer used by Wait, Listen, Play Along, Free Play, lessons, imports, and synchronized keyboard hints. The optimizer adapts PianoPlayer's MIT-licensed medium-hand geometry, movement-time cost, finger-strength weighting, black-key reach, and crossing constraints, while retaining conventional scale/chord shapes as a uniform musical prior and preserving authored finger numbers.
+- Made the score's measure window responsive. It now shows as many complete measures as the available panel width can hold legibly (two through five) without resizing or distorting either clef.
+- Added a remembered 61-, 76-, or 88-key physical range for the virtual keyboard. Key width and octave positions remain identical to the full 88-key layout; keys outside the selected physical range are grey while idle but remain clickable and light normally. A future 88-key instrument can enable the complete A0-C8 physical range with one selection.
+- Matched the physical-range selector to the light piano-sound control, including a readable dropdown menu under KDE color schemes and large system fonts.
+- Added PianoPlayer attribution and its MIT license to `THIRD_PARTY_NOTICES.md`.
+
+### 0.2.22 — 2026-10-16
+
+- Rebuilt automatic left-hand fingering around a physical hand position instead of isolated note-pair labels. Rising bass shapes now move from pinky toward thumb, descending shapes move from thumb toward pinky, and octave drops correctly reset onto the pinky.
+- Added mirrored biomechanics repair passes for both hands at imported MIDI boundaries. Nearby notes can no longer jump directly between thumb and pinky, repeated keys keep a stable finger, and medium leaps cannot reuse or reverse fingers unless the hand genuinely relocates. The right hand rises from thumb toward pinky while the left hand rises from pinky toward thumb.
+- Corrected dense MIDI chord analysis by sorting unique pitches low-to-high before assigning fingers and by giving duplicate copies of the same MIDI key one shared finger.
+- Chord fingering now recognizes major, minor, diminished, and augmented triads plus common seventh chords and their inversions. Incomplete two-note shapes use the neighboring chord as harmonic context and preserve shared tones on the same finger; for example, right-hand C-G followed by E-G is fingered `1-5` then `3-5`.
+- Fingering is evaluated as a phrase-level movable hand position: five neighboring scale notes fill one five-finger frame, successive thirds progress through `1-3`, `2-4`, `3-5` (mirrored in the left hand), and longer scales cross the thumb at a natural turning finger. Rhythmic gaps, completed note releases, and genuine register leaps establish new hand positions.
+- Added a batch audit for the MIDI/MusicXML/project files under `Desktop/Music Lessons`, including nearby extreme swaps, reversed movements, unstable repeated notes, and chord-order or duplicate-key errors. A malformed `.mxl` file with a missing ZIP directory is reported separately as an import error.
+- Added regression coverage at both ends of the 88-key range: left-hand A0-C1-E1 ascending, descending, as a chord, and both directions of an A0-A1 octave; plus right-hand C7-E7-G7 in both directions.
+
+### 0.2.21 — 2026-10-16
+
+- Fixed Wait mode becoming stuck on a correctly played highlighted note because an older, overlapping imported-MIDI note was still being required invisibly. Each orange attack now checks only its own visible note or chord for its written length.
+- Releasing a highlighted key before its written length now tells the player which note was released early and that pressing it again will continue, instead of leaving the orange line apparently frozen without an explanation.
+- Consecutive repeated notes still require a real release and fresh key press.
+
+### 0.2.20 — 2026-10-16
+
+- Corrected automatic fingering for every imported MIDI, MusicXML/PDF result, and Free Play score. The optimizer now uses the real distance between notes even when a fifth is embedded in a longer passage or might otherwise be mistaken for a hand crossing; for example, a left-hand C-to-G fifth is now `5-1`, and C-E-G is `5-3-1`.
+- Added regression tests for left- and right-hand fifths and a broken-chord outline so this cannot regress to the awkward `5-4` C-to-G mapping.
+
+### 0.2.19 — 2026-10-16
+
+- Shortened the orange score playhead to the grand-staff band instead of drawing it through the entire panel. It no longer crosses the upper or lower fingering guides, keeping the initial finger number readable.
+
+### 0.2.18 — 2026-10-16
+
+- Corrected Morning Light's authored left-hand fingering. Its C3 notes now use the thumb (`1`) instead of the little finger (`5`), and the C3-A2-G2 position follows the conventional `1-3-5` shape.
+- Added regression coverage for the complete Morning Light bass pitches and fingering sequence.
+
 ### 0.2.17 — 2026-10-16
 
 - Made the Grand Staff viewport completely static. It permanently uses the same A0-to-C8 vertical bounds, 212-pixel panel height, and notation scale regardless of the notes, measure, hand filter, or playback position.
@@ -253,8 +334,8 @@ Audiveris is not installed into `/usr` by this package. Each user receives a pri
 
 Copyright © 2026 Voncloft.
 
-VArpeggio's original source code is released under the **GNU General Public License, version 3**. See [LICENSE](LICENSE).
+VArpeggio's original source code is released under **GNU GPL-3.0-only**. See [LICENSE](LICENSE).
 
-Bundled data and third-party components retain their own licenses. In particular, the recorded piano is CC0, Verovio is LGPL-3.0-only, and the separately downloaded and launched Audiveris engine is AGPL-3.0. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the complete component inventory and source links.
+Bundled data and third-party components retain their own licenses. In particular, the recorded piano is CC0, Verovio is LGPL-3.0-only, Verovio's embedded fonts are OFL-1.1, and the separately downloaded and launched Audiveris engine is AGPL-3.0. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and the [LICENSES](LICENSES/) directory for the complete component inventory, license texts, and corresponding-source information.
 
 The VArpeggio and Voncloft names and artwork are not automatically licensed as trademarks by the GPL.

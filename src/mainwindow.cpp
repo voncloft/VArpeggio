@@ -73,7 +73,7 @@
 #include <limits>
 
 #ifndef VARPEGGIO_VERSION
-#define VARPEGGIO_VERSION "0.2.17"
+#define VARPEGGIO_VERSION "0.2.33"
 #endif
 
 namespace {
@@ -873,6 +873,7 @@ QWidget *MainWindow::buildWorkspace() {
   m_scoreStack = new QStackedWidget;
   m_score = new ScoreWidget;
   m_scoreStack->addWidget(m_score);
+  connect(m_score,&ScoreWidget::frameHeightHintChanged,this,[this](int height){m_scoreStack->setFixedHeight(height);});
   m_pdfDocument = new QPdfDocument(this);
   m_pdfView = new QPdfView;
   m_pdfView->setDocument(m_pdfDocument);
@@ -924,6 +925,7 @@ QWidget *MainWindow::buildWorkspace() {
           });
   l->addWidget(scoreCard, 0);
   auto *practiceSection = makeCard("card");
+  m_practiceSection=practiceSection;
   practiceSection->setFixedHeight(340);
   auto *practiceSectionLayout = new QVBoxLayout(practiceSection);
   practiceSectionLayout->setContentsMargins(0, 0, 0, 0);
@@ -1019,6 +1021,7 @@ QWidget *MainWindow::buildWorkspace() {
                                                            expanded);
           });
   l->addWidget(practiceSection);
+  practiceSection->setVisible(QSettings("Voncloft","VArpeggio").value("ui/practiceSectionVisible",true).toBool());
   auto *keyboard = makeCard("card");
   keyboard->setFixedHeight(235);
   auto *kl = new QVBoxLayout(keyboard);
@@ -1050,6 +1053,14 @@ QWidget *MainWindow::buildWorkspace() {
   audioRow->setContentsMargins(0, 0, 0, 0);
   audioRow->setSpacing(8);
   audioRow->addWidget(label("PIANO SOUND", "sectionHeading"));
+  auto *keyboardRange = new QComboBox;
+  keyboardRange->setObjectName("keyboardRangeCombo");
+  keyboardRange->addItem("61 keys · C2–C7",61);
+  keyboardRange->addItem("76 keys · E1–G7",76);
+  keyboardRange->addItem("88 keys · A0–C8",88);
+  keyboardRange->setToolTip("Match the virtual keyboard to the physical keyboard. MIDI devices do not normally report their key count, so this choice is remembered.");
+  keyboardRange->setFixedWidth(150);
+  audioRow->addWidget(keyboardRange);
   m_instrumentCombo = new QComboBox;
   m_instrumentCombo->setObjectName("instrumentCombo");
   m_instrumentCombo->addItem("Kawai upright — bright",
@@ -1125,6 +1136,16 @@ QWidget *MainWindow::buildWorkspace() {
   kRows->addWidget(audioSection);
   kl->addWidget(kTop);
   m_piano = new PianoWidget;
+  const int savedKeyCount=QSettings("Voncloft","VArpeggio").value("midi/keyCount",61).toInt();
+  const int rangeIndex=qMax(0,keyboardRange->findData(savedKeyCount));
+  keyboardRange->setCurrentIndex(rangeIndex);
+  auto applyKeyboardRange=[this](int keys){
+    if(keys==88)m_piano->setKeyRange(21,108);
+    else if(keys==76)m_piano->setKeyRange(28,103);
+    else m_piano->setKeyRange(36,96);
+  };
+  applyKeyboardRange(keyboardRange->currentData().toInt());
+  connect(keyboardRange,&QComboBox::currentIndexChanged,this,[keyboardRange,applyKeyboardRange](int){const int keys=keyboardRange->currentData().toInt();applyKeyboardRange(keys);QSettings("Voncloft","VArpeggio").setValue("midi/keyCount",keys);});
   kl->addWidget(m_piano, 1);
   auto setKeyboardExpanded = [keyboard, kTop, audioSection, this,
                               keyboardCollapse](bool expanded) {
@@ -1171,6 +1192,14 @@ void MainWindow::buildMenus() {
     loadRoutineStep(4);
   });
   practice->addAction("Open Director…", this, &MainWindow::openDetectorView);
+  auto *settings = menuBar()->addMenu("&Settings");
+  m_showPracticeSectionAction=settings->addAction("Show Bubbles + Live Coach");
+  m_showPracticeSectionAction->setCheckable(true);
+  m_showPracticeSectionAction->setChecked(QSettings("Voncloft","VArpeggio").value("ui/practiceSectionVisible",true).toBool());
+  connect(m_showPracticeSectionAction,&QAction::toggled,this,[this](bool visible){
+    if(m_practiceSection)m_practiceSection->setVisible(visible);
+    QSettings("Voncloft","VArpeggio").setValue("ui/practiceSectionVisible",visible);
+  });
   auto *experimental = menuBar()->addMenu("&Experimental");
   experimental->addAction("Video Notes", this, &MainWindow::openVideoLab);
   auto *help = menuBar()->addMenu("&Help");
@@ -1181,8 +1210,10 @@ void MainWindow::buildMenus() {
                 "Studio</b></p><p>Version %1</p><p>Built by "
                 "Voncloft<br>Copyright © 2026 Voncloft</p><p>VArpeggio is free "
                 "and open-source software released under the GNU General Public "
-                "License, version 3. License and third-party notices are included "
-                "with the application.</p>")
+                "License, version 3 only. You may redistribute it under that "
+                "license; it is provided without warranty. The complete GPL, "
+                "third-party notices, and corresponding-source information are "
+                "included in the application's installed documentation.</p>")
             .arg(VARPEGGIO_VERSION));
   });
 }
@@ -1214,7 +1245,8 @@ void MainWindow::applyStyle() {
 #playButton{min-width:126px;max-width:126px}
 #tempoControl{font-weight:800;background:#fffefa;border:1px solid #dedbd1;border-radius:7px;padding:5px 2px}
 #tempoControl:focus{border-color:#2d7d70}
-#instrumentCombo,#keyboardToneCombo{color:#31534d;background:#f4f7f3;border:1px solid #cbd4d0;border-radius:6px;padding:4px 7px;font-size:9px}
+#instrumentCombo,#keyboardToneCombo,#keyboardRangeCombo{color:#31534d;background:#f4f7f3;border:1px solid #cbd4d0;border-radius:6px;padding:4px 7px;font-size:9px}
+#keyboardRangeCombo QAbstractItemView{color:#18312d;background:#fffefa;border:1px solid #9fb7b0;selection-color:white;selection-background-color:#2d7d70;outline:0}
 #volumeLabel{color:#687671;font-size:9px}
 #volumeSlider::groove:horizontal{height:5px;background:#c7cdca;border-radius:2px}
 #volumeSlider::sub-page:horizontal{background:#2d7d70;border-radius:2px}
@@ -1272,7 +1304,7 @@ void MainWindow::applyStyle() {
 }
 
 void MainWindow::connectUi() {
-  m_scoreStack->setFixedHeight(212);
+  m_scoreStack->setFixedHeight(m_score->recommendedFrameHeight());
   m_sourceAudio->setText("Hear original recording (reference only)");
   m_sourceAudio->setToolTip(
       "Reference only; leave off to hear the generated staff notes");
@@ -1999,11 +2031,25 @@ void MainWindow::setMode(Mode mode) {
   }
   updatePrimaryButton();
 }
-void MainWindow::setSong(const QString&title,const QVector<NoteEvent>&notes,int tempo){stopPlayback(false);clearImportedMediaSource();m_bubble->resetState();m_title=title;m_notes=notes;m_tempo=qBound(30,tempo,260);m_titleEdit->setText(title);m_titleEdit->setCursorPosition(0);if(m_tempoControl){const QSignalBlocker blocker(m_tempoControl);m_tempoControl->setValue(m_tempo);}m_pdfDocument->close();m_generatedScoreDir.reset();m_scoreViewButton->setText("Exact PDF");m_scoreViewButton->hide();m_liveScoreButton->hide();m_liveScoreButton->setEnabled(true);m_liveScoreButton->setChecked(true);m_scoreStack->setCurrentWidget(m_score);m_score->setTimeSignatures({{0.0,4,4}});m_score->setKeySignatures({{0.0,MusicDocument::inferKeySignature(notes)}});m_score->setRests({});m_score->setRepeatEnds({});m_score->setPedalEvents({});m_score->setNotes(notes);m_bubble->setNotes(notes);m_notice->hide();rebuildPractice();updateSongMeta();}
+void MainWindow::setSong(const QString&title,const QVector<NoteEvent>&notes,int tempo){stopPlayback(false);clearImportedMediaSource();m_bubble->resetState();m_title=title;m_notes=notes;rebuildKeyboardReleaseBeats();m_tempo=qBound(30,tempo,260);m_titleEdit->setText(title);m_titleEdit->setCursorPosition(0);if(m_tempoControl){const QSignalBlocker blocker(m_tempoControl);m_tempoControl->setValue(m_tempo);}m_pdfDocument->close();m_generatedScoreDir.reset();m_scoreViewButton->setText("Exact PDF");m_scoreViewButton->hide();m_liveScoreButton->hide();m_liveScoreButton->setEnabled(true);m_liveScoreButton->setChecked(true);m_scoreStack->setCurrentWidget(m_score);m_score->setTimeSignatures({{0.0,4,4}});m_score->setKeySignatures({{0.0,MusicDocument::inferKeySignature(notes)}});m_score->setRests({});m_score->setRepeatEnds({});m_score->setPedalEvents({});m_score->setNotes(notes);m_bubble->setNotes(notes);m_notice->hide();rebuildPractice();updateSongMeta();}
 void MainWindow::setExactScoreAvailable(const QString &label){m_scoreViewButton->setText(label);m_scoreViewButton->show();m_liveScoreButton->setEnabled(!m_notes.isEmpty());m_liveScoreButton->show();m_scoreViewButton->setChecked(true);m_scoreStack->setCurrentWidget(m_pdfView);}
 
 void MainWindow::updatePrimaryButton(){if(m_playing){m_playButton->setText("Ⅱ  Pause");return;}if(m_playbackPaused){m_playButton->setText("▶  Resume");return;}if(m_earTraining){m_playButton->setText("♫  Hear again");return;}switch(m_mode){case Mode::Wait:m_playButton->setText("◎  Restart wait");break;case Mode::Listen:m_playButton->setText("▶  Listen");break;case Mode::Follow:m_playButton->setText("▶  Play along");break;case Mode::Free:m_playButton->setText("▶  Preview score");break;}}
 QVector<NoteEvent> MainWindow::filteredNotes()const{QVector<NoteEvent>out;for(const auto&n:m_notes)if(m_handFilter<0||(m_handFilter==0&&n.hand==Hand::Left)||(m_handFilter==1&&n.hand==Hand::Right))out<<n;return out;}
+QSet<int> MainWindow::activeWaitAttackNotes()const{
+    QSet<int> required;
+    if(m_groupIndex<0||m_groupIndex>=m_groups.size())return required;
+    const double attack=m_groups[m_groupIndex].start;
+    // Only the notes visibly introduced by the current orange attack belong
+    // to this hold. Imported MIDI commonly leaves an earlier note overlapping
+    // the next onset by a few ticks; requiring that invisible older note made
+    // Wait mode appear permanently stuck despite the player pressing exactly
+    // what the score highlighted.
+    for(const auto &note:filteredNotes())
+        if(qAbs(note.start-attack)<.015&&note.start<=m_waitBeat+.001&&note.start+note.duration>m_waitBeat+.001)
+            required.insert(note.note);
+    return required;
+}
 void MainWindow::setHandFilter(int filter){if(m_playing||m_playbackPaused)stopPlayback(true);m_handFilter=filter;m_score->setHandFilter(filter);m_bubble->setHandFilter(filter);if(m_mode!=Mode::Free)m_score->setKeySignatures({{0.0,MusicDocument::inferKeySignature(filteredNotes())}});rebuildPractice();QString hand=filter<0?"Hands together":filter==0?"Left hand":"Right hand";toast(hand+" practice");}
 void MainWindow::rebuildPractice(){m_groups.clear();auto notes=filteredNotes();std::sort(notes.begin(),notes.end(),[](auto&a,auto&b){return a.start<b.start;});for(const auto&n:notes){if(m_groups.isEmpty()||qAbs(m_groups.last().start-n.start)>.015)m_groups<<PracticeGroup{n.start,{}};m_groups.last().notes.insert(n.note);}m_groupIndex=0;m_matched.clear();m_attempts=m_correct=m_streak=m_bestStreak=0;m_waitBeat=m_groups.isEmpty()?0.0:m_groups.first().start;m_waitAdvanceClock.restart();m_lastWaitAdvanceMs=0;m_scoreAutoFollow=true;m_score->setPlayedBeat(-1);m_score->setFollowBeat(m_waitBeat);updateExpected();updateScoreHistory(m_waitBeat,true);m_bubble->setPlayhead(m_waitBeat);updateStats();}
 void MainWindow::updateExpected(){
@@ -2033,13 +2079,19 @@ void MainWindow::updatePianoFingeringHints(double beat,const QSet<int>&preferred
         // During playback, keep all currently sounding fingers visible. In a
         // gap, preview the next attack so the aid remains useful instead of
         // blinking away between notes.
-        for(const auto &note:scoreNotes)if(visible(note)&&note.start<=beat+.035&&note.start+note.duration>beat-.035&&note.finger>=1&&note.finger<=5)hints[note.note]=note.finger;
-        if(hints.isEmpty()){
+        for(int index=0;index<scoreNotes.size();++index){const auto &note=scoreNotes[index];const double release=m_keyboardReleaseBeats.value(index,note.start+note.duration);if(visible(note)&&note.start<=beat+.035&&release>beat-.035&&note.finger>=1&&note.finger<=5)hints[note.note]=note.finger;}
+        if(hints.isEmpty()&&!m_playing){
             double next=std::numeric_limits<double>::max();for(const auto &note:scoreNotes)if(visible(note)&&note.start>=beat-.035)next=qMin(next,note.start);
             if(next<std::numeric_limits<double>::max())for(const auto &note:scoreNotes)if(visible(note)&&qAbs(note.start-next)<.02&&note.finger>=1&&note.finger<=5)hints[note.note]=note.finger;
         }
     }
     m_piano->setFingerHints(hints);
+}
+void MainWindow::rebuildKeyboardReleaseBeats(){m_keyboardReleaseBeats=MusicDocument::keyboardReleaseBeats(m_notes);}
+void MainWindow::refreshPlaybackPiano(double beat){
+    if(!m_piano)return;QSet<int> active;
+    for(int index=0;index<m_notes.size();++index){const auto &note=m_notes[index];const bool visible=m_handFilter<0||(m_handFilter==0&&note.hand==Hand::Left)||(m_handFilter==1&&note.hand==Hand::Right);const double release=m_keyboardReleaseBeats.value(index,note.start+note.duration);if(visible&&note.start<=beat+.001&&release>beat+.001)active.insert(note.note);}
+    for(int note=21;note<=108;++note)if(!m_heldNotes.contains(note)&&!m_sustainedNotes.contains(note))m_piano->setActive(note,active.contains(note));
 }
 void MainWindow::updateStats(){const bool completed=m_routineStep>=0&&m_routineCompletedSteps.contains(m_routineStep);const int progress=completed?100:(m_earTraining?qMin(100,m_earTrainingSolved*10):(m_groups.isEmpty()?0:m_groupIndex*100/m_groups.size()));QString acc=m_attempts?QString::number(m_correct*100/m_attempts)+"%":"—";m_accuracyLabel->setText(acc+"\nACCURACY");m_streakLabel->setText(QString::number(m_streak)+"\nSTREAK");m_progressLabel->setText(QString::number(progress)+"%\nPROGRESS");}
 
@@ -2158,6 +2210,8 @@ void MainWindow::userNoteOn(int note,int velocity){if(m_heldNotes.contains(note)
         updateStats();
     }else if((m_mode==Mode::Wait||m_mode==Mode::Follow)&&m_groupIndex<m_groups.size()){const auto&expected=m_groups[m_groupIndex].notes;m_attempts++;if(expected.contains(note)){if(!m_matched.contains(note)){m_matched.insert(note);m_correct++;m_streak++;m_bestStreak=qMax(m_bestStreak,m_streak);}if(m_mode==Mode::Wait)m_coachLabel->setText(expected.size()>1?QString("Correct pitch — %1 of %2 chord notes held\nKeep holding for the written lengths.").arg(m_matched.size()).arg(expected.size()):"Correct pitch — keep holding\nThe line and falling note now follow your key length.");else m_coachLabel->setText("Correct pitch — keep playing with the moving line\nPlay Along advances by tempo, not by a quick touch.");}else{m_streak=0;m_coachLabel->setText(m_score->noteNameForBeat(note,m_groups[m_groupIndex].start)+" is close — try "+m_nextNoteLabel->text()+".");}updateStats();}}
 void MainWindow::userNoteOff(int note){
+    const bool releasedEarly=m_mode==Mode::Wait&&!m_earTraining&&!m_sustain&&
+        m_groupIndex>=0&&m_groupIndex<m_groups.size()&&m_matched.contains(note)&&activeWaitAttackNotes().contains(note);
     m_heldNotes.remove(note);
     if(m_liveMidiOutputNotes.remove(note))m_midiOutput.noteOff(note);
     if(m_mode==Mode::Free&&m_freePlayStarts.contains(note)){
@@ -2181,10 +2235,12 @@ void MainWindow::userNoteOff(int note){
     if(m_recording&&m_recordStarts.contains(note)){double end=m_recordClock.elapsed()/1000.0*m_tempo/60.0,start=m_recordStarts.take(note);start=qRound(start*4)/4.0;double duration=qMax(.25,qRound((end-start)*4)/4.0);m_recorded<<NoteEvent{note,start,duration,96,note<60?Hand::Left:Hand::Right};}
     if(m_sustain){m_sustainedNotes.insert(note);return;}
     if(m_userVoiceIds.contains(note))m_synth.noteOffVoice(m_userVoiceIds.take(note));m_piano->setActive(note,false);if(m_heldNotes.isEmpty())m_liveNoteLabel->setText(m_recording?"Recording…":"Ready");
+    if(releasedEarly){const double start=m_groups[m_groupIndex].start;m_coachLabel->setText("Released "+m_score->noteNameForBeat(note,start)+" early — hold it until the orange line reaches the next note.\nPress the highlighted key again to continue.");}
 }
 void MainWindow::playbackNoteOn(int i){const auto&n=m_notes[i];m_piano->setActive(n.note,true);m_bubble->pulseNote(n.note);if(m_midiOutputCheck->isChecked()&&!m_usingImportedMediaAudio&&m_midiOutput.isOpen()){m_midiOutput.noteOn(n.note,n.velocity);m_midiOutputNotes[n.note]=m_midiOutputNotes.value(n.note)+1;}}
 void MainWindow::playbackNoteOff(int i){const auto&n=m_notes[i];if(!m_heldNotes.contains(n.note))m_piano->setActive(n.note,false);if(m_midiOutputNotes.contains(n.note)){const int remaining=m_midiOutputNotes.value(n.note)-1;if(remaining<=0){m_midiOutputNotes.remove(n.note);m_midiOutput.noteOff(n.note);}else m_midiOutputNotes[n.note]=remaining;}}
 void MainWindow::togglePlayback(){
+    rebuildKeyboardReleaseBeats();
     if(m_playing){pausePlayback();return;}
     if(m_playbackPaused){
         const int clockTempo=m_usingImportedMediaAudio&&m_importedMediaTempo>0?m_importedMediaTempo:m_tempo;
@@ -2271,15 +2327,14 @@ void MainWindow::updateClocks(){
         if(m_usingImportedMediaAudio&&m_sourcePlayer->position()>=m_importedMediaStartMs){elapsedSeconds=(m_sourcePlayer->position()-m_importedMediaStartMs)/1000.0;clockTempo=m_importedMediaTempo>0?m_importedMediaTempo:m_tempo;}
         beat=elapsedSeconds*clockTempo/60.0;clockActive=true;
         for(int i=0;i<m_notes.size();++i){const auto&n=m_notes[i];bool use=m_handFilter<0||(m_handFilter==0&&n.hand==Hand::Left)||(m_handFilter==1&&n.hand==Hand::Right);if(!use)continue;if(!m_startedEvents.contains(i)&&beat>=n.start){m_startedEvents.insert(i);playbackNoteOn(i);}if(m_startedEvents.contains(i)&&!m_endedEvents.contains(i)&&beat>=n.start+n.duration){m_endedEvents.insert(i);playbackNoteOff(i);}}
-        m_score->setPlayedBeat(beat);m_bubble->setPlayhead(beat);updatePianoFingeringHints(beat);if(m_mode==Mode::Free)updateFreePlayPreviewHistory(beat);else{const int previousGroup=m_groupIndex;while(m_groupIndex+1<m_groups.size()&&m_groups[m_groupIndex+1].start<=beat+.08)m_groupIndex++;if(m_groupIndex!=previousGroup){m_matched.clear();updateExpected();}updateScoreHistory(beat);}
+        refreshPlaybackPiano(beat);m_score->setPlayedBeat(beat);m_bubble->setPlayhead(beat);if(m_mode==Mode::Free)updateFreePlayPreviewHistory(beat);else{const int previousGroup=m_groupIndex;while(m_groupIndex+1<m_groups.size()&&m_groups[m_groupIndex+1].start<=beat+.08)m_groupIndex++;if(m_groupIndex!=previousGroup){m_matched.clear();updateExpected();}updateScoreHistory(beat);}updatePianoFingeringHints(beat);
         double end=0;for(const auto&n:m_notes){const bool use=m_handFilter<0||(m_handFilter==0&&n.hand==Hand::Left)||(m_handFilter==1&&n.hand==Hand::Right);if(use)end=qMax(end,n.start+n.duration);}if(beat>end+.2){const bool repeat=m_mode==Mode::Follow;const bool rewind=repeat||m_mode==Mode::Listen;stopPlayback(rewind);if(repeat)QTimer::singleShot(0,this,[this]{if(m_mode==Mode::Follow&&!m_playing&&!m_playbackPaused&&!m_notes.isEmpty())togglePlayback();});}
     }else if(m_mode==Mode::Wait&&!m_earTraining&&!m_groups.isEmpty()){
         const qint64 now=m_waitAdvanceClock.elapsed();
         const double elapsedBeats=qMax<qint64>(0,now-m_lastWaitAdvanceMs)*m_tempo/60000.0;
         m_lastWaitAdvanceMs=now;
         const auto notes=filteredNotes();
-        QSet<int> required;
-        for(const auto &note:notes)if(note.start<=m_waitBeat+.001&&note.start+note.duration>m_waitBeat+.001)required.insert(note.note);
+        const QSet<int> required=activeWaitAttackNotes();
         // Every written attack in the current group must be played after that
         // group becomes current.  This deliberately differs from merely
         // checking whether a pitch is still held: two consecutive C notes are
@@ -2383,7 +2438,7 @@ void MainWindow::refreshFreePlayStaff(){
 
 void MainWindow::syncFreePlayScore(){
     const bool firstApply=!m_freePlayApplied;if(firstApply){m_title="Free Play score";m_titleEdit->setText(m_title);clearImportedMediaSource();m_pdfDocument->close();m_generatedScoreDir.reset();m_scoreViewButton->hide();m_liveScoreButton->hide();}
-    m_freePlayApplied=true;m_notes=m_freePlayNotes;double endBeat=0;for(const auto &note:m_freePlayNotes)endBeat=qMax(endBeat,note.start+note.duration);for(const auto &rest:m_freePlayRests)endBeat=qMax(endBeat,rest.beat+rest.duration);const int seconds=qRound(endBeat*60.0/qMax(1,m_tempo));m_noteCountLabel->setText(QString("%1 notes · %2 rests").arg(m_freePlayNotes.size()).arg(m_freePlayRests.size()));m_durationLabel->setText(QString("%1:%2").arg(seconds/60).arg(seconds%60,2,10,QChar('0')));
+    m_freePlayApplied=true;m_notes=m_freePlayNotes;rebuildKeyboardReleaseBeats();double endBeat=0;for(const auto &note:m_freePlayNotes)endBeat=qMax(endBeat,note.start+note.duration);for(const auto &rest:m_freePlayRests)endBeat=qMax(endBeat,rest.beat+rest.duration);const int seconds=qRound(endBeat*60.0/qMax(1,m_tempo));m_noteCountLabel->setText(QString("%1 notes · %2 rests").arg(m_freePlayNotes.size()).arg(m_freePlayRests.size()));m_durationLabel->setText(QString("%1:%2").arg(seconds/60).arg(seconds%60,2,10,QChar('0')));
 }
 
 void MainWindow::clearFreePlayStaff(){
@@ -3061,22 +3116,17 @@ QDialog#chordPracticeDialog QDialogButtonBox QPushButton:hover{color:white;backg
     QVector<int> intervals;for(const QString &value:quality->currentData().toString().split(',',Qt::SkipEmptyParts))intervals.append(value.toInt());
     const int inversionIndex=inversion->currentData().toInt();for(int index=0;index<inversionIndex&&index<intervals.size();++index)intervals[index]+=12;std::sort(intervals.begin(),intervals.end());
     const int rootPitch=root->currentIndex();const int selectedHand=hand->currentData().toInt();const int selectedPattern=pattern->currentData().toInt();QVector<NoteEvent> exercise;
-    auto chordFinger=[](int index,int count,Hand noteHand){
-        QVector<int> right;
-        if(count==2)right={1,5};else if(count==3)right={1,3,5};else if(count==4)right={1,2,3,5};else if(count==5)right={1,2,3,4,5};else return 0;
-        return noteHand==Hand::Right?right.value(index):right.value(count-1-index);
-    };
-    auto appendTone=[&](int midi,double beat,double duration,Hand noteHand,int finger){auto note=NoteEvent{qBound(21,midi,108),beat,duration,100,noteHand};note.finger=finger;exercise.append(note);};
+    auto appendTone=[&](int midi,double beat,double duration,Hand noteHand){exercise.append(NoteEvent{qBound(21,midi,108),beat,duration,100,noteHand});};
     for(int repetition=0;repetition<8;++repetition){
         const double baseBeat=repetition*4.0;
         for(Hand noteHand:{Hand::Left,Hand::Right}){
             if((noteHand==Hand::Left&&selectedHand==1)||(noteHand==Hand::Right&&selectedHand==0))continue;
             const int base=(noteHand==Hand::Left?48:60)+rootPitch;
-            if(selectedPattern==0){for(int index=0;index<intervals.size();++index)appendTone(base+intervals[index],baseBeat,2.0,noteHand,chordFinger(index,intervals.size(),noteHand));}
+            if(selectedPattern==0){for(int index=0;index<intervals.size();++index)appendTone(base+intervals[index],baseBeat,2.0,noteHand);}
             else{
                 QVector<int> sequence=intervals;if(selectedPattern==2&&intervals.size()>1)for(int index=intervals.size()-2;index>0;--index)sequence.append(intervals[index]);
                 const double step=qMax(.25,2.0/qMax(1,sequence.size()));
-                for(int index=0;index<sequence.size();++index){const int toneIndex=intervals.indexOf(sequence[index]);appendTone(base+sequence[index],baseBeat+index*step,qMax(.22,step*.82),noteHand,chordFinger(toneIndex,intervals.size(),noteHand));}
+                for(int index=0;index<sequence.size();++index)appendTone(base+sequence[index],baseBeat+index*step,qMax(.22,step*.82),noteHand);
             }
         }
     }

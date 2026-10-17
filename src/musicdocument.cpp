@@ -238,6 +238,33 @@ QVector<NoteEvent> sortNotes(QVector<NoteEvent> notes) {
     return notes;
 }
 
+void refineMidiHandAssignment(QVector<NoteEvent> &notes) {
+    // A fixed middle-C split breaks cross-staff piano textures. In a rolling
+    // right-hand figure, its lowest note can sit below C4 while a much lower
+    // left-hand octave is held underneath it. Keep the held bass in the left
+    // hand and join the short pickup to the nearby upper-hand notes.
+    QVector<int> promote;
+    for(int index=0;index<notes.size();++index){
+        const auto &note=notes[index];
+        if(note.note<52||note.note>=60||note.duration>1.55)continue;
+        bool heldBass=false;
+        for(const auto &anchor:notes){
+            if(anchor.note>note.note-5||anchor.start>note.start+.04)continue;
+            const double anchorEnd=anchor.start+anchor.duration;
+            if(anchorEnd>=note.start+qMin(note.duration,.65)&&anchor.duration>=qMax(2.0,note.duration*2.4)){heldBass=true;break;}
+        }
+        if(!heldBass)continue;
+        bool upperNeighbour=false;
+        const double neighbourWindow=qMax(1.05,note.duration*1.10);
+        for(const auto &other:notes){
+            if(&other==&note||other.note<60||other.note-note.note>12||other.duration>1.65)continue;
+            if(qAbs(other.start-note.start)<=neighbourWindow){upperNeighbour=true;break;}
+        }
+        if(upperNeighbour)promote<<index;
+    }
+    for(int index:promote)notes[index].hand=Hand::Right;
+}
+
 struct DecodedAudio {
     QVector<float> samples;
     int sampleRate = 22050;
@@ -608,6 +635,30 @@ int MusicDocument::inferKeySignature(const QVector<NoteEvent> &notes) {
     return inferKeySignatureImpl(notes);
 }
 
+QVector<double> MusicDocument::keyboardReleaseBeats(const QVector<NoteEvent> &notes) {
+    QVector<double> releases(notes.size());
+    for(int index=0;index<notes.size();++index)releases[index]=notes[index].start+notes[index].duration;
+    for(Hand hand:{Hand::Left,Hand::Right}){
+        QVector<int> indexes;for(int index=0;index<notes.size();++index)if(notes[index].hand==hand)indexes<<index;
+        double nextAttack=std::numeric_limits<double>::max();
+        for(int cursor=indexes.size()-1;cursor>=0;){
+            const double attack=notes[indexes[cursor]].start;int first=cursor;
+            while(first>0&&qAbs(notes[indexes[first-1]].start-attack)<.015)--first;
+            if(nextAttack<std::numeric_limits<double>::max()){
+                const double attackGap=nextAttack-attack;
+                for(int position=first;position<=cursor;++position){
+                    const int index=indexes[position];const double overlap=releases[index]-nextAttack;
+                    // Clip only short exporter-created legato tails. A truly
+                    // sustained voice remains lit across later attacks.
+                    if(overlap>.001&&overlap<=qMin(.35,qMax(.06,attackGap*.50)))releases[index]=nextAttack;
+                }
+            }
+            nextAttack=attack;cursor=first-1;
+        }
+    }
+    return releases;
+}
+
 QString MusicDocument::noteName(int midi, bool withOctave) {
     const int normalized = ((midi % 12) + 12) % 12;
     return QString::fromLatin1(kNames[normalized]) + (withOctave ? QString::number(midi / 12 - 1) : QString());
@@ -632,7 +683,9 @@ QVector<NoteEvent> MusicDocument::morningLight() {
     const int melody[] = {60,62,64,67,69,67,64,62,60,64,67,72};
     const int melodyFingers[] = {1,2,3,4,5,4,3,2,1,2,3,5};
     const int bass[] = {48,48,45,43,48,45};
-    const int bassFingers[] = {5,5,3,2,5,3};
+    // These are authored lesson annotations, not generated guesses. Like
+    // explicit MusicXML fingering, the shared optimizer treats them as fixed.
+    const int bassFingers[] = {1,1,3,5,1,3};
     for (int i=0;i<12;++i) {auto note=NoteEvent{melody[i], double(i), i==11?2.0:0.82, 92, Hand::Right};note.finger=melodyFingers[i];n<<note;}
     for (int i=0;i<6;++i) {auto note=NoteEvent{bass[i], double(i*2), 1.7, 76, Hand::Left};note.finger=bassFingers[i];n<<note;}
     return sortNotes(n);
@@ -681,8 +734,10 @@ QVector<NoteEvent> MusicDocument::chordRoutine(int variation) {
         const int qualityThird = (roots[i]==9) ? 3 : 4;
         const double beat = i*2.0;
         const QVector<int> pitches{48+roots[i],60+roots[i],60+roots[i]+qualityThird,67+roots[i]};
-        const QVector<int> fingers{5,1,3,5};
-        for(int index=0;index<pitches.size();++index){const int p=pitches[index];auto note=NoteEvent{p,beat,1.6,p<60?74:90,p<60?Hand::Left:Hand::Right};note.finger=fingers[index];n<<note;}
+        // Leave lesson fingering unassigned. ScoreWidget runs this drill
+        // through the same phrase-level physical optimizer as every practice
+        // mode; hard-coding the bass to finger 5 bypassed that shared path.
+        for(const int p:pitches)n<<NoteEvent{p,beat,1.6,p<60?74:90,p<60?Hand::Left:Hand::Right};
     }
     return sortNotes(n);
 }
@@ -746,6 +801,7 @@ bool MusicDocument::importMidi(const QByteArray &data, QVector<NoteEvent> &notes
         else unique.append(event);
     }
     for(const auto &r:unique) if(r.end>r.start) notes<<NoteEvent{r.note,double(r.start)/division,qMax(.05,double(r.end-r.start)/division),r.vel,r.note<60?Hand::Left:Hand::Right};
+    refineMidiHandAssignment(notes);
     if(notes.isEmpty()) { setError(error,"No playable notes were found in this MIDI file."); return false; }
     return true;
 }

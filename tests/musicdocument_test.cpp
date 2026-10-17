@@ -88,6 +88,11 @@ int main(int argc, char **argv) {
     for(const auto &note:fMajorRoutine)if(note.hand==Hand::Right&&note.start<4.0)fRight.append(note.finger);
     ok &= check(fRight==QVector<int>({1,2,3,4,1,2,3,4}),"F-major lesson uses the conventional fourth-finger crossing");
 
+    const auto morning=MusicDocument::morningLight();QVector<int> morningBassPitches,morningBassFingers;
+    for(const auto &note:morning)if(note.hand==Hand::Left){morningBassPitches.append(note.note);morningBassFingers.append(note.finger);}
+    ok &= check(morningBassPitches==QVector<int>({48,48,45,43,48,45}),"Morning Light keeps its authored bass line");
+    ok &= check(morningBassFingers==QVector<int>({1,1,3,5,1,3}),"Morning Light uses LH thumb on C3 and conventional 1-3-5 placement");
+
     const QString midi = temp.filePath("roundtrip.mid");
     const QVector<PedalEvent> sourcePedals{{.25,true},{2.75,false}};
     ok &= check(MusicDocument::saveMidi(midi, source, tempo, &error, sourcePedals), "write MIDI");
@@ -103,6 +108,28 @@ int main(int argc, char **argv) {
     loaded.clear();tempo=90;
     ok &= check(MusicDocument::importFile(duplicateMidi,loaded,title,tempo,&error),"read duplicate-channel MIDI fixture");
     ok &= check(loaded.size()==1&&loaded.first().velocity==104,"MIDI import merges identical notes duplicated across channels");
+
+    const QString rollingTextureMidi=temp.filePath("cross-staff-rolling-texture.mid");
+    const QVector<NoteEvent> rollingTexture{
+        {37,0,9.25,72,Hand::Left},{49,0,9.25,72,Hand::Left},
+        {56,0,1,84,Hand::Right},{61,.75,1,84,Hand::Right},{64,1.5,1,84,Hand::Right},
+        {56,2.25,1,84,Hand::Right},{61,3,1,84,Hand::Right},{64,3.75,1,84,Hand::Right}
+    };
+    ok &= check(MusicDocument::saveMidi(rollingTextureMidi,rollingTexture,110,&error),"write cross-staff rolling-texture MIDI fixture");
+    loaded.clear();tempo=90;
+    ok &= check(MusicDocument::importFile(rollingTextureMidi,loaded,title,tempo,&error),"read cross-staff rolling-texture MIDI fixture");
+    bool bassStayedLeft=true,rollingStayedRight=true;
+    for(const auto &note:loaded){if(note.note<=49)bassStayedLeft&=note.hand==Hand::Left;else rollingStayedRight&=note.hand==Hand::Right;}
+    ok &= check(loaded.size()==rollingTexture.size(),"cross-staff hand inference preserves every MIDI note");
+    ok &= check(bassStayedLeft&&rollingStayedRight,"held bass octave stays left while the complete rolling figure stays right");
+    const QVector<NoteEvent> visualLegato{
+        {37,0,9.25,72,Hand::Left},{49,0,9.25,72,Hand::Left},
+        {56,0,1,84,Hand::Right},{61,.75,1,84,Hand::Right},{64,1.5,1,84,Hand::Right},
+        {35,9,9.25,72,Hand::Left},{47,9,9.25,72,Hand::Left},{56,9,1,84,Hand::Right}
+    };
+    const auto visualReleases=MusicDocument::keyboardReleaseBeats(visualLegato);
+    ok &= check(qAbs(visualReleases[0]-9.0)<.001&&qAbs(visualReleases[1]-9.0)<.001,"virtual bass keys release at the next bass attack instead of piling up across a barline");
+    ok &= check(qAbs(visualReleases[2]-.75)<.001&&qAbs(visualReleases[3]-1.5)<.001,"virtual rolling keys release at the next attack while audio legato remains intact");
 
     const QString xml = temp.filePath("roundtrip.musicxml");
     ok &= check(MusicDocument::saveMusicXml(xml, source, 72, "Chord drill", &error), "write MusicXML");

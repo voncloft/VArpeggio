@@ -68,30 +68,69 @@ AccidentalMark automaticAccidental(int midi,int fifths){
     return AccidentalMark::Automatic;
 }
 bool included(const NoteEvent &n,int filter){return filter<0||(filter==0&&n.hand==Hand::Left)||(filter==1&&n.hand==Hand::Right);}
+QPair<int,int> maximumFingeringChordSizes(const QVector<NoteEvent> &notes,int filter){
+    QVector<const NoteEvent*> ordered;for(const auto &note:notes)if(included(note,filter)&&note.finger>=1&&note.finger<=5)ordered.append(&note);
+    std::sort(ordered.begin(),ordered.end(),[](const auto *a,const auto *b){return a->hand==b->hand?a->start<b->start:int(a->hand)<int(b->hand);});
+    int right=1,left=1;
+    for(int cursor=0;cursor<ordered.size();){int end=cursor+1;while(end<ordered.size()&&ordered[end]->hand==ordered[cursor]->hand&&qAbs(ordered[end]->start-ordered[cursor]->start)<=.04)++end;const int count=end-cursor;if(ordered[cursor]->hand==Hand::Right)right=qMax(right,count);else left=qMax(left,count);cursor=end;}
+    return {right,left};
+}
 double fingeringTransitionCost(const NoteEvent &previous,int previousFinger,const NoteEvent &current,int finger,Hand hand){
     const int pitchSteps=diatonicIndex(current.note)-diatonicIndex(previous.note);
+    const int semitoneSpan=qAbs(current.note-previous.note);
     const int fingerSteps=finger-previousFinger;
-    if(pitchSteps==0)return finger==previousFinger?0.0:3.0*qAbs(fingerSteps);
-    const int expectedDirection=(hand==Hand::Right?pitchSteps:-pitchSteps);
+    if(current.note==previous.note)return finger==previousFinger?0.0:1000.0+20.0*qAbs(fingerSteps);
+    // The compact diatonic lookup deliberately collapses enharmonic spellings;
+    // retain the MIDI direction when two neighboring chromatic notes therefore
+    // land on the same lookup step.
+    const int movement=pitchSteps!=0?pitchSteps:current.note-previous.note;
+    const int expectedDirection=(hand==Hand::Right?movement:-movement);
     const bool naturalDirection=(expectedDirection>0&&fingerSteps>0)||(expectedDirection<0&&fingerSteps<0);
-    const bool crossing=hand==Hand::Right
-        ?((pitchSteps>0&&previousFinger>=3&&finger==1)||(pitchSteps<0&&previousFinger==1&&finger>=3))
-        :((pitchSteps>0&&previousFinger==1&&finger>=3)||(pitchSteps<0&&previousFinger>=3&&finger==1));
+    const bool crossing=semitoneSpan<=2&&(hand==Hand::Right
+        ?((movement>0&&(previousFinger==3||previousFinger==4)&&finger==1)
+          ||(movement<0&&previousFinger==1&&(finger==3||finger==4)))
+        :((movement>0&&previousFinger==1&&(finger==3||finger==4))
+          ||(movement<0&&(previousFinger==3||previousFinger==4)&&finger==1)));
     double cost=0.0;
     if(naturalDirection){
-        const int wanted=qMin(4,qMax(1,qAbs(pitchSteps)));
-        cost=2.0*qAbs(qAbs(fingerSteps)-wanted);
+        const int wanted=qBound(1,qRound(semitoneSpan*4.0/7.0),4);
+        cost=8.0*qAbs(qAbs(fingerSteps)-wanted);
     }else if(crossing){
         // Thumb-under or hand-over crossings normally span two or three
         // fingers. They are useful, but not on every pair of notes.
         cost=3.0+2.0*qAbs(qAbs(fingerSteps)-2);
-    }else if(fingerSteps==0)cost=18.0+2.0*qAbs(pitchSteps);
-    else cost=45.0+8.0*qAbs(fingerSteps);
+    }else if(fingerSteps==0)cost=500.0+10.0*semitoneSpan;
+    else cost=500.0+10.0*qAbs(fingerSteps);
     // A thumb-to-little-finger swap on an adjacent note is never a sensible
     // automatic suggestion. This was the source of the visible 1/5 pattern.
-    if(qAbs(pitchSteps)<=1&&qAbs(fingerSteps)==4)cost+=200.0;
+    if(qAbs(movement)<=1&&qAbs(fingerSteps)==4)cost+=200.0;
     if(blackKey(current.note)&&finger==1)cost+=3.0;
     return cost;
+}
+// Adapted from PianoPlayer's MIT-licensed Hand optimizer. PianoPlayer models
+// the five relaxed finger positions, finger strength, black-key reach and the
+// time available for the next movement. VArpeggio solves the complete melodic
+// chain with dynamic programming instead of repeatedly committing only the
+// first result of a nine-note window, but minimizes the same physical effort.
+double physicalTransitionCost(const NoteEvent &previous,int previousFinger,const NoteEvent &current,int finger,Hand hand){
+    static constexpr double rest[6]={0.0,-7.0*.82,-2.8*.82,0.0,2.8*.82,5.6*.82};
+    static constexpr double weight[6]={1.0,1.1,1.0,1.1,.9,.8};
+    static constexpr double blackBias[6]={1.0,.3,1.0,1.1,.8,.7};
+    const double direction=hand==Hand::Right?1.0:-1.0;
+    const double previousX=direction*previous.note*(16.5/12.0);
+    const double currentX=direction*current.note*(16.5/12.0);
+    const double waiting=qAbs(current.start-previous.start)+.1;
+    const double relaxedFingerPosition=previousX+(rest[finger]-rest[previousFinger]);
+    double effort=qAbs(currentX-relaxedFingerPosition)/waiting;
+    effort/=weight[finger]*(blackKey(current.note)?blackBias[finger]:1.0);
+
+    const double movement=currentX-previousX;
+    if(previous.note!=current.note&&previousFinger==finger&&previous.duration<4.0)return 1e9;
+    if(previousFinger>1){
+        if(finger>1&&(finger-previousFinger)*movement<0)return 1e9;
+        if(finger==1&&blackKey(current.note)&&movement>0)return 1e9;
+    }else if(blackKey(previous.note)&&movement<0&&finger>1&&previous.duration<2.0)return 1e9;
+    return effort;
 }
 void fillMelodicFingering(QVector<NoteEvent> &notes,const QVector<int> &run,Hand hand){
     if(run.isEmpty())return;
@@ -100,17 +139,24 @@ void fillMelodicFingering(QVector<NoteEvent> &notes,const QVector<int> &run,Hand
         unannotated&=notes[run[index]].finger==0;
         if(index){const int difference=notes[run[index]].note-notes[run[index-1]].note;ascending&=difference>0;descending&=difference<0;}
     }
-    // A short one-direction phrase fits under one five-finger position. It
-    // never needs a thumb crossing: LH ascending is 5-4-3..., LH descending
-    // is 1-2-3..., with the right hand mirrored.
+    // A short one-direction phrase that spans no more than a fifth fits under
+    // one hand position. Map the actual diatonic distance to the finger, not
+    // merely the event count: C-G is 1-5 in RH and 5-1 in LH, while C-E-G is
+    // 1-3-5 / 5-3-1. Treating every next event as the next finger previously
+    // produced the unusable LH C-G suggestion 5-4 in imported scores.
     if(unannotated&&run.size()>=2&&run.size()<=5&&(ascending||descending)){
-        const bool rises=ascending;
-        for(int index=0;index<run.size();++index){
+        const int firstPitch=notes[run.first()].note;
+        const int semitoneSpan=qAbs(notes[run.last()].note-firstPitch);
+        if(semitoneSpan<=12){
+            const bool rises=ascending;
             const int start=hand==Hand::Right?(rises?1:5):(rises?5:1);
             const int direction=hand==Hand::Right?(rises?1:-1):(rises?-1:1);
-            notes[run[index]].finger=start+direction*index;
+            for(int index=0;index<run.size();++index){
+                const int distance=qBound(0,qAbs(diatonicIndex(notes[run[index]].note)-diatonicIndex(firstPitch)),4);
+                notes[run[index]].finger=start+direction*distance;
+            }
+            return;
         }
-        return;
     }
     constexpr double infinity=1e12;
     QVector<QVector<double>> costs(run.size(),QVector<double>(6,infinity));
@@ -132,23 +178,186 @@ void fillMelodicFingering(QVector<NoteEvent> &notes,const QVector<int> &run,Hand
     int finger=1;for(int candidate=2;candidate<=5;++candidate)if(costs.last()[candidate]<costs.last()[finger])finger=candidate;
     for(int position=run.size()-1;position>=0;--position){notes[run[position]].finger=finger;if(position>0)finger=parents[position][finger];}
 }
+void repairHandFingering(QVector<NoteEvent> &notes,const QVector<bool> &authored,Hand hand){
+    QVector<int> order;for(int index=0;index<notes.size();++index)if(notes[index].hand==hand)order.append(index);
+    std::sort(order.begin(),order.end(),[&](int a,int b){return notes[a].start==notes[b].start?notes[a].note<notes[b].note:notes[a].start<notes[b].start;});
+    struct Group{int begin=0,end=0;};QVector<Group> groups;
+    for(int cursor=0;cursor<order.size();){int end=cursor+1;while(end<order.size()&&qAbs(notes[order[end]].start-notes[order[cursor]].start)<.015)++end;groups.append({cursor,end});cursor=end;}
+    // Chords already have simultaneous, ordered finger assignments. Between
+    // them, optimize each uninterrupted melodic chain as one physical hand
+    // movement. Authored MusicXML fingering remains a hard constraint.
+    constexpr double infinity=1e12;
+    for(int group=0;group<groups.size();){
+        if(groups[group].end-groups[group].begin!=1){++group;continue;}
+        int chainEnd=group+1;
+        while(chainEnd<groups.size()&&groups[chainEnd].end-groups[chainEnd].begin==1){
+            const auto &previous=notes[order[groups[chainEnd-1].begin]];
+            const auto &current=notes[order[groups[chainEnd].begin]];
+            // Phrase spacing is the silence after the previous key is
+            // released, not the distance between attack times. A chord drill
+            // can place attacks two beats apart while holding each bass note
+            // for 1.6 beats; treating that as a two-beat rest split every
+            // note into its own chain and bypassed the physical-hand search.
+            // Use the same release-aware boundary for lessons, imports and
+            // every playback mode that displays this shared score model.
+            const double releaseGap=current.start-(previous.start+previous.duration);
+            // A leap is not itself a phrase break: the optimizer needs to see
+            // it to choose a reachable hand relocation (for example LH 5-1
+            // across a sixth). Only genuine silence starts a new hand phrase.
+            if(releaseGap>.50)break;
+            ++chainEnd;
+        }
+        const int length=chainEnd-group;
+        // PianoPlayer requires at least three attacks for a meaningful search
+        // window. Keep the already-generated conventional interval fingering
+        // when there is not enough phrase context to optimize physically.
+        if(length<3){group=chainEnd;continue;}
+        QVector<QVector<double>> costs(length,QVector<double>(6,infinity));
+        QVector<QVector<int>> parents(length,QVector<int>(6,0));
+        for(int position=0;position<length;++position){
+            const int noteIndex=order[groups[group+position].begin];
+            const int originalFinger=notes[noteIndex].finger;
+            for(int finger=1;finger<=5;++finger){
+                if(authored[noteIndex]&&finger!=originalFinger)continue;
+                // The physical search refines a conventional phrase/chord
+                // proposal rather than discarding it. PianoPlayer's raw
+                // velocity minimum can otherwise prefer unusual but merely
+                // fast shapes (for example 5-2-1 over 5-3-1). This uniform
+                // prior applies to every score and both hands.
+                const double notationPrior=authored[noteIndex]?0.0:2.0*qAbs(finger-originalFinger);
+                if(position==0){
+                    // Place the relaxed hand around the centre of the next
+                    // five attacks. This is the physical-model equivalent of
+                    // looking ahead before choosing the first finger.
+                    QVector<int> window;
+                    for(int look=0;look<qMin(5,length);++look)window.append(notes[order[groups[group+look].begin]].note);
+                    std::sort(window.begin(),window.end());
+                    static constexpr double rest[6]={0.0,-7.0*.82,-2.8*.82,0.0,2.8*.82,5.6*.82};
+                    const double direction=hand==Hand::Right?1.0:-1.0;
+                    const double noteX=direction*notes[noteIndex].note*(16.5/12.0);
+                    const double handCentre=noteX+(rest[3]-rest[finger]);
+                    const double phraseCentre=direction*window[window.size()/2]*(16.5/12.0);
+                    costs[position][finger]=qAbs(handCentre-phraseCentre)+notationPrior;
+                    continue;
+                }
+                const int previousIndex=order[groups[group+position-1].begin];
+                for(int previousFinger=1;previousFinger<=5;++previousFinger){
+                    if(costs[position-1][previousFinger]>=infinity)continue;
+                    const double candidate=costs[position-1][previousFinger]
+                        +physicalTransitionCost(notes[previousIndex],previousFinger,notes[noteIndex],finger,hand)+notationPrior;
+                    if(candidate<costs[position][finger]){costs[position][finger]=candidate;parents[position][finger]=previousFinger;}
+                }
+            }
+        }
+        int finger=1;
+        for(int candidate=2;candidate<=5;++candidate)if(costs.last()[candidate]<costs.last()[finger])finger=candidate;
+        for(int position=length-1;position>=0;--position){
+            const int noteIndex=order[groups[group+position].begin];
+            notes[noteIndex].finger=finger;
+            if(position>0)finger=parents[position][finger];
+        }
+        group=chainEnd;
+    }
+}
+QVector<int> recognizedChordFingers(const QVector<int> &sourcePitches,Hand hand){
+    QVector<int> pitches=sourcePitches;std::sort(pitches.begin(),pitches.end());
+    pitches.erase(std::unique(pitches.begin(),pitches.end()),pitches.end());
+    QVector<int> pitchClasses;for(int pitch:pitches)if(!pitchClasses.contains((pitch%12+12)%12))pitchClasses.append((pitch%12+12)%12);
+    if(pitchClasses.size()!=3&&pitchClasses.size()!=4)return {};
+    const QVector<QVector<int>> triads{{0,4,7},{0,3,7},{0,3,6},{0,4,8}};
+    const QVector<QVector<int>> sevenths{{0,4,7,10},{0,4,7,11},{0,3,7,10},{0,3,6,10},{0,3,6,9}};
+    const auto &patterns=pitchClasses.size()==3?triads:sevenths;
+    int root=-1,inversion=0;
+    for(int candidate:pitchClasses){
+        for(const auto &pattern:patterns){
+            bool matches=true;for(int interval:pattern)matches&=pitchClasses.contains((candidate+interval)%12);
+            if(!matches)continue;
+            root=candidate;inversion=pattern.indexOf(((pitches.first()%12+12)%12-root+12)%12);break;
+        }
+        if(root>=0)break;
+    }
+    if(root<0||inversion<0||pitches.size()!=pitchClasses.size())return {};
+    if(pitches.size()==3){
+        if(hand==Hand::Right)return inversion==1?QVector<int>{1,2,5}:QVector<int>{1,3,5};
+        return inversion==2?QVector<int>{5,2,1}:QVector<int>{5,3,1};
+    }
+    if(hand==Hand::Right)return inversion==0?QVector<int>{1,2,3,5}:QVector<int>{1,2,4,5};
+    return inversion==0?QVector<int>{5,3,2,1}:QVector<int>{5,4,2,1};
+}
 QVector<NoteEvent> withSuggestedFingering(QVector<NoteEvent> notes){
     // Preserve authored fingering, but fill missing values so the optional aid
     // also works for imported MIDI/MusicXML and notes captured in Free Play.
     // Chords get a conventional outside-to-outside hand shape; melodic notes
     // continue by diatonic distance and cross the thumb when the hand runs out.
+    QVector<bool> authored;authored.reserve(notes.size());for(const auto &note:notes)authored.append(note.finger>=1&&note.finger<=5);
     for(const Hand hand:{Hand::Right,Hand::Left}){
         QVector<int> order;for(int index=0;index<notes.size();++index)if(notes[index].hand==hand)order.append(index);
         std::sort(order.begin(),order.end(),[&](int a,int b){return qFuzzyCompare(notes[a].start+1.0,notes[b].start+1.0)?notes[a].note<notes[b].note:notes[a].start<notes[b].start;});
+        QMap<int,int> previousChordFingers;QVector<int> previousChordPitches;double previousChordStart=-1000.0;
         for(int cursor=0;cursor<order.size();){
             int end=cursor+1;while(end<order.size()&&qAbs(notes[order[end]].start-notes[order[cursor]].start)<.015)++end;
             const int count=end-cursor;
             if(count>1){
                 static const QVector<QVector<int>> right{{},{1},{1,5},{1,3,5},{1,2,3,5},{1,2,3,4,5}};
                 static const QVector<QVector<int>> left{{},{5},{5,1},{5,3,1},{5,3,2,1},{5,4,3,2,1}};
-                const auto &shape=hand==Hand::Right?right[qMin(5,count)]:left[qMin(5,count)];
-                for(int offset=0;offset<count;++offset)if(notes[order[cursor+offset]].finger==0)
-                    notes[order[cursor+offset]].finger=count<=5?shape[offset]:qBound(1,hand==Hand::Right?1+qRound(offset*4.0/(count-1)):5-qRound(offset*4.0/(count-1)),5);
+                QVector<int> pitches;for(int offset=0;offset<count;++offset)if(!pitches.contains(notes[order[cursor+offset]].note))pitches.append(notes[order[cursor+offset]].note);std::sort(pitches.begin(),pitches.end());
+                const int uniqueCount=pitches.size();QVector<int> shape=recognizedChordFingers(pitches,hand);
+                if(shape.isEmpty())shape=hand==Hand::Right?right[qMin(5,uniqueCount)]:left[qMin(5,uniqueCount)];
+                // A dyad is not automatically a full 1-5 stretch. Size it by
+                // its actual interval, then retain a shared finger from the
+                // immediately preceding chord when possible. For example,
+                // RH C-G followed by E-G remains 1-5 then 3-5 instead of
+                // needlessly moving E onto the thumb.
+                if(uniqueCount==2){
+                    const int semitones=qAbs(pitches[1]-pitches[0]);
+                    const int distance=semitones<=2?1:semitones<=4?2:semitones<=5?3:4;
+                    shape=hand==Hand::Right?QVector<int>{1,1+distance}:QVector<int>{5,5-distance};
+                    if(notes[order[cursor]].start-previousChordStart<=1.25&&previousChordPitches.size()==2){
+                        QVector<int> harmonicContext=previousChordPitches;
+                        for(int pitch:pitches)if(!harmonicContext.contains(pitch))harmonicContext.append(pitch);
+                        std::sort(harmonicContext.begin(),harmonicContext.end());
+                        const auto contextualShape=recognizedChordFingers(harmonicContext,hand);
+                        if(!contextualShape.isEmpty()){
+                            QVector<int> contextualDyad;
+                            for(int pitch:pitches)contextualDyad.append(contextualShape[harmonicContext.indexOf(pitch)]);
+                            if(contextualDyad.size()==2)shape=contextualDyad;
+                        }
+                        const bool lowerShared=previousChordFingers.contains(pitches[0]);
+                        const bool upperShared=previousChordFingers.contains(pitches[1]);
+                        const int previousSpan=qAbs(previousChordPitches[1]-previousChordPitches[0]);
+                        const int lowerMotion=pitches[0]-previousChordPitches[0];
+                        const int upperMotion=pitches[1]-previousChordPitches[1];
+                        const bool parallelNeighbors=!lowerShared&&!upperShared
+                            &&qAbs(previousSpan-semitones)<=1&&qAbs(lowerMotion)<=2
+                            &&qAbs(upperMotion)<=2&&lowerMotion*upperMotion>0;
+                        if(parallelNeighbors){
+                            const int shift=(lowerMotion>0?1:-1)*(hand==Hand::Right?1:-1);
+                            const int lower=previousChordFingers.value(previousChordPitches[0])+shift;
+                            const int upper=previousChordFingers.value(previousChordPitches[1])+shift;
+                            if(lower>=1&&lower<=5&&upper>=1&&upper<=5)shape={lower,upper};
+                        }else if(lowerShared&&upperShared){
+                            const int lower=previousChordFingers.value(pitches[0]),upper=previousChordFingers.value(pitches[1]);
+                            if((hand==Hand::Right&&lower<upper)||(hand==Hand::Left&&lower>upper))shape={lower,upper};
+                        }else if(upperShared){
+                            const int upper=previousChordFingers.value(pitches[1]);
+                            const int lower=upper+(hand==Hand::Right?-distance:distance);
+                            if(lower>=1&&lower<=5)shape={lower,upper};
+                        }else if(lowerShared){
+                            const int lower=previousChordFingers.value(pitches[0]);
+                            const int upper=lower+(hand==Hand::Right?distance:-distance);
+                            if(upper>=1&&upper<=5)shape={lower,upper};
+                        }
+                    }
+                }
+                for(int offset=0;offset<count;++offset)if(notes[order[cursor+offset]].finger==0){
+                    const int pitchIndex=pitches.indexOf(notes[order[cursor+offset]].note);
+                    int authored=0;for(int peer=cursor;peer<end;++peer)if(notes[order[peer]].note==notes[order[cursor+offset]].note&&notes[order[peer]].finger>0){authored=notes[order[peer]].finger;break;}
+                    notes[order[cursor+offset]].finger=authored>0?authored:(uniqueCount<=5?shape[pitchIndex]:qBound(1,hand==Hand::Right?1+qRound(pitchIndex*4.0/(uniqueCount-1)):5-qRound(pitchIndex*4.0/(uniqueCount-1)),5));
+                }
+                previousChordFingers.clear();
+                for(int offset=0;offset<count;++offset)previousChordFingers[notes[order[cursor+offset]].note]=notes[order[cursor+offset]].finger;
+                previousChordPitches=pitches;
+                previousChordStart=notes[order[cursor]].start;
             }
             cursor=end;
         }
@@ -161,7 +370,11 @@ QVector<NoteEvent> withSuggestedFingering(QVector<NoteEvent> notes){
             else{
                 if(!run.isEmpty()){
                     const auto &previous=notes[run.last()];const auto &current=notes[order[cursor]];
-                    const bool registerLeap=qAbs(current.note-previous.note)>7;
+                    const int registerSpan=qAbs(current.note-previous.note);
+                    // Keep an exact octave together so it receives the normal
+                    // outside-finger 1/5 reach. Other leaps larger than a fifth
+                    // start a fresh hand position.
+                    const bool registerLeap=registerSpan>7&&registerSpan!=12;
                     const bool phraseGap=current.start-previous.start>qMax(1.25,previous.duration+.75);
                     if(registerLeap||phraseGap){fillMelodicFingering(notes,run,hand);run.clear();}
                 }
@@ -171,12 +384,14 @@ QVector<NoteEvent> withSuggestedFingering(QVector<NoteEvent> notes){
         }
         fillMelodicFingering(notes,run,hand);
     }
+    repairHandFingering(notes,authored,Hand::Right);
+    repairHandFingering(notes,authored,Hand::Left);
     return notes;
 }
 }
 
 ScoreWidget::ScoreWidget(QWidget *parent):QWidget(parent){setMinimumHeight(190);setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Expanding);}
-void ScoreWidget::setNotes(const QVector<NoteEvent>&n){m_notes=withSuggestedFingering(n);update();}
+void ScoreWidget::setNotes(const QVector<NoteEvent>&n){m_notes=withSuggestedFingering(n);updateGeometry();update();emit frameHeightHintChanged(recommendedFrameHeight());}
 void ScoreWidget::setExpected(const QSet<int>&n,double start){m_expected=n;m_groupStart=start;update();}
 void ScoreWidget::setPlayedBeat(double b){m_playedBeat=b;update();}
 void ScoreWidget::setFollowBeat(double b){m_followBeat=qMax(0.0,b);update();}
@@ -191,8 +406,8 @@ void ScoreWidget::setRests(const QVector<StaffRestEvent>&rests){m_rests=rests;st
 void ScoreWidget::setRepeatEnds(const QVector<double>&beats){m_repeatEnds=beats;std::sort(m_repeatEnds.begin(),m_repeatEnds.end());update();}
 void ScoreWidget::setPedalEvents(const QVector<PedalEvent>&events){m_pedalEvents=events;std::sort(m_pedalEvents.begin(),m_pedalEvents.end(),[](const auto&a,const auto&b){return a.beat<b.beat;});update();}
 void ScoreWidget::setShowNames(bool s){m_showNames=s;update();}
-void ScoreWidget::setShowFingering(bool show){m_showFingering=show;update();}
-void ScoreWidget::setHandFilter(int f){m_handFilter=f;update();}
+void ScoreWidget::setShowFingering(bool show){m_showFingering=show;updateGeometry();update();emit frameHeightHintChanged(recommendedFrameHeight());}
+void ScoreWidget::setHandFilter(int f){m_handFilter=f;updateGeometry();update();emit frameHeightHintChanged(recommendedFrameHeight());}
 void ScoreWidget::paintEvent(QPaintEvent*){QPainter p(this);paintScore(p,rect());}
 
 QPair<double,double> ScoreWidget::viewRange() const {
@@ -205,7 +420,13 @@ QPair<double,double> ScoreWidget::viewRange() const {
         // Page by whole measures: the current bar owns the left slot and the
         // next bar is the preview on the right. Crossing a barline replaces
         // the left slot instead of continuously sliding beneath the clefs.
-        const auto measure=measureAt(m_timeSignatures,followed);startBeat=measure.first;window=measure.second*2.0;
+        const auto measure=measureAt(m_timeSignatures,followed);startBeat=measure.first;
+        // Fill a wide score with additional complete measures while retaining
+        // enough horizontal room for notes, labels, and fingering. Resizing or
+        // maximizing changes the number of visible measures, not the clef or
+        // staff scale.
+        const int visibleMeasures=qBound(2,qMax(1,width())/520,5);
+        window=measure.second*visibleMeasures;
     }
     return {startBeat,window};
 }
@@ -214,7 +435,20 @@ QRectF ScoreWidget::canvasViewport(const QRectF &) const {
     // Permanent A0-C8 viewport. Its bounds never depend on the current notes,
     // measure, hand filter, fingering, or playback position, so the score can
     // never zoom when the music moves into another register.
+    if(m_showFingering){
+        const auto sizes=maximumFingeringChordSizes(m_notes,m_handFilter);
+        // Low ledger notes and their stems can push the common LH fingering
+        // lane below its nominal 320px position (and high RH notation can do
+        // the inverse). Once a vertical chord stack is needed, expose the
+        // complete safe canvas instead of estimating from finger count alone.
+        if(sizes.first>1||sizes.second>1)return QRectF(0.0,0.0,scoreCanvasWidth,scoreCanvasHeight);
+    }
     return QRectF(0.0,45.0,scoreCanvasWidth,298.0);
+}
+
+int ScoreWidget::recommendedFrameHeight() const {
+    const double sourceHeight=canvasViewport(QRectF()).height();
+    return qMax(212,qCeil(212.0*sourceHeight/298.0));
 }
 
 QPointF ScoreWidget::widgetToCanvas(const QPointF &point) const {
@@ -365,7 +599,15 @@ void ScoreWidget::paintScore(QPainter &p,const QRectF &target) const {
         if(event.beat>=startBeat-.001){p.setFont(QFont("Noto Serif",13,QFont::Bold));p.drawText(QPointF(x1,y),"Ped.");}
         if(released&&release<=startBeat+window+.001){p.setFont(QFont("Noto Serif",16,QFont::Bold));p.drawText(QPointF(x2-3,y+2),"*");}
     }
-    if(followed>=startBeat&&followed<=startBeat+window){const double playX=musicLeft+(followed-startBeat)*scale;p.fillRect(QRectF(playX-2,8,4,canvasHeight-16),QColor(239,119,95,70));p.setPen(QColor("#bd5945"));p.drawLine(QPointF(playX,8),QPointF(playX,canvasHeight-8));}
+    if(followed>=startBeat&&followed<=startBeat+window){
+        const double playX=musicLeft+(followed-startBeat)*scale;
+        // Keep the playhead within the musical grand-staff band. The top and
+        // bottom fingering guides sit outside this range, so the orange line
+        // can no longer run through the finger number the player needs next.
+        constexpr double playLineTop=118.0,playLineBottom=272.0;
+        p.fillRect(QRectF(playX-2,playLineTop,4,playLineBottom-playLineTop),QColor(239,119,95,70));
+        p.setPen(QColor("#bd5945"));p.drawLine(QPointF(playX,playLineTop),QPointF(playX,playLineBottom));
+    }
     if(m_editEnabled&&m_editCursorBeat>=startBeat&&m_editCursorBeat<=startBeat+window){
         const double editX=musicLeft+(m_editCursorBeat-startBeat)*scale;p.fillRect(QRectF(editX-2.5,48,5,190),QColor("#ef775f"));
         p.setPen(QColor("#bd5945"));p.setBrush(QColor("#ef775f"));QPolygonF marker;marker<<QPointF(editX-7,48)<<QPointF(editX+7,48)<<QPointF(editX,58);p.drawPolygon(marker);
@@ -458,10 +700,17 @@ void ScoreWidget::paintScore(QPainter &p,const QRectF &target) const {
             chords<<chord;
         }
         auto &chord=chords.last();
-        chord.rhythm=qMin(chord.rhythm,qMax(.0625,note->duration));
         const auto placement=staffPlacement(*note,fifthsAt(m_keySignatures,note->start),verticalOffset);
-        chord.notes<<RenderNote{note,placement.y,chord.x,noteColor(*note),placement.octaveDisplacement};
-        chord.flags=qMax(chord.flags,flagsForDuration(note->duration));
+        // Multi-track MIDI files frequently contain the same key twice at
+        // effectively the same instant. The synth may retain both events,
+        // but printed notation has one notehead and one fingering instruction
+        // for that physical key. Keeping both produced misleading stacks such
+        // as "1 1 5" that looked like a nonexistent finger 11.
+        auto duplicate=std::find_if(chord.notes.begin(),chord.notes.end(),[&](const RenderNote &render){return render.event->note==note->note;});
+        if(duplicate==chord.notes.end())chord.notes<<RenderNote{note,placement.y,chord.x,noteColor(*note),placement.octaveDisplacement};
+        else if(note->duration>duplicate->event->duration)*duplicate=RenderNote{note,placement.y,chord.x,noteColor(*note),placement.octaveDisplacement};
+        chord.rhythm=std::numeric_limits<double>::max();chord.flags=0;
+        for(const auto &render:chord.notes){chord.rhythm=qMin(chord.rhythm,qMax(.0625,render.event->duration));chord.flags=qMax(chord.flags,flagsForDuration(render.event->duration));}
     }
     // A continuous extreme-register phrase uses one octave level throughout.
     // Switching between 8va and 15ma note by note is not normal engraving and
@@ -575,23 +824,56 @@ void ScoreWidget::paintScore(QPainter &p,const QRectF &target) const {
     // One consistent fingering guide per visible staff. Base each guide on
     // the outermost note/stem in this viewport, then keep every fingering on
     // that same Y coordinate. Simultaneous chord fingers spread sideways.
-    double trebleFingeringY=90.0,bassFingeringY=310.0;
-    int maxTrebleFingerCount=1,maxBassFingerCount=1;
+    double trebleFingeringY=90.0,bassFingeringY=320.0;
     bool haveTreble=false,haveBass=false;
     for(const auto &chord:chords){
         double minY=chord.notes.first().y,maxY=minY;
-        int fingerCount=0;
         for(const auto &render:chord.notes){minY=qMin(minY,render.y);maxY=qMax(maxY,render.y);}
-        for(const auto &render:chord.notes)if(render.event->finger>=1&&render.event->finger<=5)++fingerCount;
         if(chord.stemEndY!=0){minY=qMin(minY,chord.stemEndY);maxY=qMax(maxY,chord.stemEndY);}
-        if(chord.hand==Hand::Right){const double candidate=minY-18.0;trebleFingeringY=haveTreble?qMin(trebleFingeringY,candidate):candidate;maxTrebleFingerCount=qMax(maxTrebleFingerCount,fingerCount);haveTreble=true;}
-        else{const double candidate=maxY+18.0;bassFingeringY=haveBass?qMax(bassFingeringY,candidate):candidate;maxBassFingerCount=qMax(maxBassFingerCount,fingerCount);haveBass=true;}
+        if(chord.hand==Hand::Right){const double candidate=minY-18.0;trebleFingeringY=haveTreble?qMin(trebleFingeringY,candidate):candidate;haveTreble=true;}
+        else{const double candidate=maxY+28.0;bassFingeringY=haveBass?qMax(bassFingeringY,candidate):candidate;haveBass=true;}
     }
     // Measure labels occupy the lane immediately above the treble staff.
-    // Keep RH fingering in its own higher lane so a number on beat one can
+    // Keep RH fingering in its own higher lanes so a number on beat one can
     // never merge with M2/M3 or appear clipped by the barline heading.
     trebleFingeringY=qMax(18.0,qMin(92.0,trebleFingeringY));
-    bassFingeringY=qMin(canvasHeight-18.0,bassFingeringY);
+    // Keep the closest LH digit in a dedicated lane below the bass staff.
+    // The old first-candidate assignment discarded the intended 310px floor,
+    // allowing the upper digit of a dyad to land back among the staff lines.
+    bassFingeringY=qMin(canvasHeight-18.0,qMax(320.0,bassFingeringY));
+
+    // Fingering belongs to the attack, but very fast imported MIDI can place
+    // two different attacks only a few canvas units apart. Give each attack a
+    // distinct local column so adjacent 1s read as "1  1", never "11". The
+    // notes and their timing stay exactly where they were engraved.
+    QHash<const NoteEvent*,double> fingeringColumns;
+    for(Hand hand:{Hand::Left,Hand::Right}){
+        QVector<int> indexes;
+        for(int index=0;index<chords.size();++index){
+            if(chords[index].hand!=hand)continue;
+            bool hasFinger=false;for(const auto &render:chords[index].notes)hasFinger|=render.event->finger>=1&&render.event->finger<=5;
+            if(hasFinger)indexes<<index;
+        }
+        auto placeCluster=[&](int first,int end){
+            const int count=end-first;if(count<=0)return;
+            constexpr double preferredGap=18.0;
+            const double available=musicRight-musicLeft-16.0;
+            const double gap=count>1?qMin(preferredGap,available/(count-1)):0.0;
+            const double width=gap*(count-1);
+            const double centre=(chords[indexes[first]].x+chords[indexes[end-1]].x)*.5;
+            const double left=qBound(musicLeft+8.0,centre-width*.5,musicRight-8.0-width);
+            for(int offset=0;offset<count;++offset){
+                const auto &chord=chords[indexes[first+offset]];const double column=left+offset*gap;
+                for(const auto &render:chord.notes)fingeringColumns.insert(render.event,column);
+            }
+        };
+        int first=0;
+        while(first<indexes.size()){
+            int end=first+1;
+            while(end<indexes.size()&&chords[indexes[end]].x-chords[indexes[end-1]].x<18.0)++end;
+            placeCluster(first,end);first=end;
+        }
+    }
 
     // Ledger lines sit behind the noteheads.
     for(const auto &chord:chords)for(const auto &render:chord.notes){
@@ -625,8 +907,8 @@ void ScoreWidget::paintScore(QPainter &p,const QRectF &target) const {
     for(const auto &run:octaveRuns){
         const bool above=run.displacement>0;
         double y=above?qMax(24.0,run.outerY-42.0):qMin(canvasHeight-20.0,run.outerY+42.0);
-        if(above&&run.hand==Hand::Right)y=qMax(18.0,qMin(y,trebleFingeringY-(maxTrebleFingerCount-1)*14.0-22.0));
-        if(!above&&run.hand==Hand::Left)y=qMin(canvasHeight-18.0,qMax(y,bassFingeringY+(maxBassFingerCount-1)*14.0+22.0));
+        if(above&&run.hand==Hand::Right)y=qMax(18.0,qMin(y,trebleFingeringY-22.0));
+        if(!above&&run.hand==Hand::Left)y=qMin(canvasHeight-18.0,qMax(y,bassFingeringY+22.0));
         const QString label=qAbs(run.displacement)>1?(above?"15ma":"15mb"):(above?"8va":"8vb");
         p.setPen(QColor("#52645f"));p.setFont(QFont("Noto Serif",10,QFont::DemiBold));p.drawText(QPointF(run.x1,y),label);
         const double lineY=above?y-4:y+4;
@@ -773,17 +1055,16 @@ void ScoreWidget::paintScore(QPainter &p,const QRectF &target) const {
             p.setPen(color);p.setFont(QFont("Manrope",8,QFont::Bold));p.drawText(label,Qt::AlignCenter,name);
         }
         if(m_showFingering&&note.finger>=1&&note.finger<=5){
-            // Keep fingering in dedicated rows outside the staves. Deriving
-            // the position from the notehead put low left-hand digits inside
-            // beams and made valid fingerings look incomplete. Stack only
-            // simultaneous chord tones vertically at the chord's fixed X
-            // position without moving the staff's normal guide line.
+            // Single notes stay on one guide line. Simultaneous chord fingers
+            // stack vertically at the chord's X coordinate; ScoreWidget asks
+            // its containing frame for exactly the extra height needed so the
+            // outer digits are not clipped.
             int fingerIndex=0,fingerCount=0;for(const auto &candidate:chord.notes)if(candidate.event->finger>=1&&candidate.event->finger<=5){if(candidate.event==&note)fingerIndex=fingerCount;++fingerCount;}
-            const double spread=0.0;
             double fingerY=note.hand==Hand::Right?trebleFingeringY:bassFingeringY;
-            if(fingerCount>1)fingerY+=note.hand==Hand::Right?-fingerIndex*14.0:(fingerCount-1-fingerIndex)*14.0;
+            if(fingerCount>1)fingerY+=note.hand==Hand::Right?-fingerIndex*16.0:(fingerCount-1-fingerIndex)*16.0;
             p.setPen(QColor("#6c5145"));p.setFont(QFont("Noto Sans",9,QFont::Bold));
-            p.drawText(QRectF(chord.x+spread-7,fingerY-7,14,14),Qt::AlignCenter,QString::number(note.finger));
+            const double fingerX=fingeringColumns.value(&note,chord.x);
+            p.drawText(QRectF(fingerX-7,fingerY-7,14,14),Qt::AlignCenter,QString::number(note.finger));
         }
     }
     p.restore();
@@ -838,17 +1119,18 @@ void ScoreWidget::wheelEvent(QWheelEvent *event){
 }
 
 PianoWidget::PianoWidget(QWidget *parent):QWidget(parent){setMinimumHeight(130);setMouseTracking(true);setFocusPolicy(Qt::StrongFocus);}
-QRectF PianoWidget::noteRect(int note) const {int whites=0,total=0;for(int n=m_low;n<=m_high;++n)if(!blackKey(n))++total;double ww=width()/double(total);for(int n=m_low;n<=note;++n)if(!blackKey(n))++whites;if(blackKey(note))return QRectF((whites-.34)*ww,0,ww*.68,height()*.62);return QRectF((whites-1)*ww,0,ww,height());}
-int PianoWidget::noteAt(const QPointF&p)const{for(int n=m_low;n<=m_high;++n)if(blackKey(n)&&noteRect(n).contains(p))return n;for(int n=m_low;n<=m_high;++n)if(!blackKey(n)&&noteRect(n).contains(p))return n;return-1;}
-void PianoWidget::setActive(int n,bool a){if(a)m_active.insert(n);else m_active.remove(n);update(noteRect(n).adjusted(-5,-5,5,5).toRect());}
+QRectF PianoWidget::noteRect(int note) const {int whites=0;const double ww=width()/52.0;for(int n=21;n<=note;++n)if(!blackKey(n))++whites;if(blackKey(note))return QRectF((whites-.34)*ww,0,ww*.68,height()*.62);return QRectF((whites-1)*ww,0,ww,height());}
+int PianoWidget::noteAt(const QPointF&p)const{for(int n=21;n<=108;++n)if(blackKey(n)&&noteRect(n).contains(p))return n;for(int n=21;n<=108;++n)if(!blackKey(n)&&noteRect(n).contains(p))return n;return-1;}
+void PianoWidget::setActive(int n,bool a){if(a)m_active.insert(n);else m_active.remove(n);if(n>=21&&n<=108)update(noteRect(n).adjusted(-5,-5,5,5).toRect());}
 void PianoWidget::setFingerHints(const QHash<int,int>&hints){if(m_fingerHints==hints)return;m_fingerHints=hints;update();}
-void PianoWidget::paintEvent(QPaintEvent*){QPainter p(this);p.setRenderHint(QPainter::Antialiasing);p.fillRect(rect(),QColor("#20332f"));auto draw=[&](bool black){for(int n=m_low;n<=m_high;++n){if(blackKey(n)!=black)continue;QRectF r=noteRect(n).adjusted(1,0,-1,-2);QPainterPath path;path.addRoundedRect(r,black?3:4,black?3:4);if(m_active.contains(n))p.fillPath(path,QColor(black?"#ef775f":"#9ee0d0"));else{QLinearGradient g(r.topLeft(),r.bottomLeft());if(black){g.setColorAt(0,QColor("#2d3c38"));g.setColorAt(1,QColor("#07110f"));}else{g.setColorAt(0,Qt::white);g.setColorAt(1,QColor("#e0dfd7"));}p.fillPath(path,g);}p.setPen(QPen(QColor(black?"#07110f":"#adb5b2"),1));p.drawPath(path);if(!black&&n%12==0){p.setPen(QColor("#8a9692"));p.setFont(QFont("DM Mono",7));p.drawText(r.adjusted(0,0,0,-7),Qt::AlignHCenter|Qt::AlignBottom,MusicDocument::noteName(n));}}};draw(false);draw(true);
+void PianoWidget::setKeyRange(int low,int high){low=qBound(21,low,108);high=qBound(low,high,108);if(m_low==low&&m_high==high)return;m_low=low;m_high=high;update();}
+void PianoWidget::paintEvent(QPaintEvent*){QPainter p(this);p.setRenderHint(QPainter::Antialiasing);p.fillRect(rect(),QColor("#20332f"));auto draw=[&](bool black){for(int n=21;n<=108;++n){if(blackKey(n)!=black)continue;const bool inactive=n<m_low||n>m_high;QRectF r=noteRect(n).adjusted(1,0,-1,-2);QPainterPath path;path.addRoundedRect(r,black?3:4,black?3:4);if(m_active.contains(n))p.fillPath(path,QColor(black?"#ef775f":"#9ee0d0"));else if(inactive)p.fillPath(path,QColor(black?"#303633":"#aeb2ae"));else{QLinearGradient g(r.topLeft(),r.bottomLeft());if(black){g.setColorAt(0,QColor("#2d3c38"));g.setColorAt(1,QColor("#07110f"));}else{g.setColorAt(0,Qt::white);g.setColorAt(1,QColor("#e0dfd7"));}p.fillPath(path,g);}p.setPen(QPen(QColor(inactive?"#747b77":black?"#07110f":"#adb5b2"),1));p.drawPath(path);if(!black&&n%12==0){p.setPen(QColor(inactive?"#757c78":"#8a9692"));p.setFont(QFont("DM Mono",7));p.drawText(r.adjusted(0,0,0,-7),Qt::AlignHCenter|Qt::AlignBottom,MusicDocument::noteName(n));}}};draw(false);draw(true);
     // Fingering is an optional score aid, so keep the keyboard clean unless
     // MainWindow supplies hints for the current score position. Draw the
     // badges after both key layers so black-key hints cannot cover white-key
     // numbers. Each chord tone receives its own synchronized finger.
     QList<int> hinted=m_fingerHints.keys();std::sort(hinted.begin(),hinted.end());
-    for(int n:hinted){const int finger=m_fingerHints.value(n);if(n<m_low||n>m_high||finger<1||finger>5)continue;const bool black=blackKey(n);const QRectF key=noteRect(n).adjusted(1,0,-1,-2);const double diameter=qBound(13.0,key.width()-3.0,22.0);const QPointF center(key.center().x(),key.bottom()-(black?diameter*.70:diameter*.78));const QRectF badge(center.x()-diameter*.5,center.y()-diameter*.5,diameter,diameter);p.setPen(QPen(QColor("#fffefa"),qMax(1.0,diameter*.08)));p.setBrush(QColor(m_active.contains(n)?"#d95843":"#287f70"));p.drawEllipse(badge);QFont font=QApplication::font();font.setBold(true);font.setPixelSize(qBound(10,qRound(diameter*.70),16));p.setFont(font);p.setPen(Qt::white);p.drawText(badge,Qt::AlignCenter,QString::number(finger));}
+    for(int n:hinted){const int finger=m_fingerHints.value(n);if(n<21||n>108||finger<1||finger>5)continue;const bool black=blackKey(n);const QRectF key=noteRect(n).adjusted(1,0,-1,-2);const double diameter=qBound(13.0,key.width()-3.0,22.0);const QPointF center(key.center().x(),key.bottom()-(black?diameter*.70:diameter*.78));const QRectF badge(center.x()-diameter*.5,center.y()-diameter*.5,diameter,diameter);p.setPen(QPen(QColor("#fffefa"),qMax(1.0,diameter*.08)));p.setBrush(QColor(m_active.contains(n)?"#d95843":"#287f70"));p.drawEllipse(badge);QFont font=QApplication::font();font.setBold(true);font.setPixelSize(qBound(10,qRound(diameter*.70),16));p.setFont(font);p.setPen(Qt::white);p.drawText(badge,Qt::AlignCenter,QString::number(finger));}
 }
 void PianoWidget::mousePressEvent(QMouseEvent*e){m_mouseNote=noteAt(e->position());if(m_mouseNote>=0)emit notePressed(m_mouseNote,100);}
 void PianoWidget::mouseMoveEvent(QMouseEvent*e){if(!(e->buttons()&Qt::LeftButton))return;int n=noteAt(e->position());if(n!=m_mouseNote){if(m_mouseNote>=0)emit noteReleased(m_mouseNote);m_mouseNote=n;if(n>=0)emit notePressed(n,100);}}

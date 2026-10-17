@@ -26,6 +26,7 @@ int main(int argc,char*argv[]){
     QApplication app(argc,argv);app.setApplicationName("VArpeggio");app.setApplicationDisplayName("VArpeggio");app.setOrganizationName("Voncloft");app.setOrganizationDomain("voncloft.com");app.setDesktopFileName("com.voncloft.VArpeggio");app.setWindowIcon(makeIcon());
     const QStringList args=app.arguments();const int shot=args.indexOf("--screenshot");const int chordDialogShot=args.indexOf("--chord-dialog-screenshot");const int routineDialogShot=args.indexOf("--routine-dialog-screenshot");const int open=args.indexOf("--open");const int importVideo=args.indexOf("--import-video");
     const int testFontSize=args.indexOf("--test-font-size");if(testFontSize>=0&&testFontSize+1<args.size()){bool ok=false;const int points=args[testFontSize+1].toInt(&ok);if(ok){QFont font=app.font();font.setPointSize(qBound(8,points,32));app.setFont(font);}}
+    int screenshotDelay=1200;const int screenshotDelayArg=args.indexOf("--screenshot-delay");if(screenshotDelayArg>=0&&screenshotDelayArg+1<args.size()){bool ok=false;const int requested=args[screenshotDelayArg+1].toInt(&ok);if(ok)screenshotDelay=qBound(50,requested,30000);}
     const int transcribe=args.indexOf("--transcribe-falling");const int transcribeAudio=args.indexOf("--transcribe-audio");const int transcribePdf=args.indexOf("--transcribe-pdf");const int estimateTempo=args.indexOf("--estimate-tempo");const int renderWav=args.indexOf("--render-wav");const int renderVideo=args.indexOf("--render-video");const int renderDetector=args.indexOf("--render-detector");const int scoreShot=args.indexOf("--score-screenshot");
     if(scoreShot>=0&&scoreShot+2<args.size()){
         QVector<NoteEvent> notes;QVector<TimeSignatureEvent> meters;QVector<double> repeats;QVector<KeySignatureEvent> keys;QVector<StaffRestEvent> rests;QVector<PedalEvent> pedals;QString title,error;int tempo=96;
@@ -130,7 +131,7 @@ int main(int argc,char*argv[]){
     if(importVideo>=0&&importVideo+1<args.size()){int tempo=0;if(importVideo+2<args.size()&&!args[importVideo+2].startsWith("--")){bool ok=false;const int requested=args[importVideo+2].toInt(&ok);if(!ok){fprintf(stderr,"The optional BPM must be a number.\n");return 64;}tempo=qBound(30,requested,260);}if(!window.transcribeVideoPath(args[importVideo+1],tempo))return 5;}
     if(args.contains("--live-follow"))window.showLiveScore();
     if(args.contains("--start-listen"))window.startListening();
-    if(shot>=0&&shot+1<args.size())QTimer::singleShot(1200,&window,[&window,&app,path=args[shot+1]]{window.grab().save(path);app.quit();});
+    if(shot>=0&&shot+1<args.size())QTimer::singleShot(screenshotDelay,&window,[&window,&app,path=args[shot+1]]{window.grab().save(path);app.quit();});
     if(chordDialogShot>=0&&chordDialogShot+1<args.size()){
         QTimer::singleShot(0,&window,[&window]{for(auto *action:window.findChildren<QAction*>())if(action->text().startsWith("Chord practice")){action->trigger();break;}});
         QTimer::singleShot(900,&window,[&app,path=args[chordDialogShot+1]]{if(auto *dialog=QApplication::activeModalWidget()){dialog->grab().save(path);dialog->close();}app.quit();});

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(VArpeggio VERSION 0.2.17 LANGUAGES CXX)
+project(VArpeggio VERSION 0.2.33 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -47,6 +47,7 @@ install(DIRECTORY soundfonts DESTINATION ${CMAKE_INSTALL_DATADIR}/varpeggio)
 install(FILES com.voncloft.VArpeggio.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
 install(FILES com.voncloft.VArpeggio.svg DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
 install(FILES README.md LICENSE THIRD_PARTY_NOTICES.md DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/varpeggio)
+install(DIRECTORY LICENSES DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/varpeggio)
 install(FILES
     tools/python/verovio-6.3.0.dist-info/licenses/COPYING
     tools/python/verovio-6.3.0.dist-info/licenses/COPYING.LESSER

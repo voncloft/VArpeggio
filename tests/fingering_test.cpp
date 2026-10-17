@@ -1,6 +1,8 @@
 #include "musicwidgets.h"
 
 #include <QApplication>
+#include <QDirIterator>
+#include <QFileInfo>
 #include <QImage>
 #include <QPainter>
 #include <QSet>
@@ -41,20 +43,106 @@ bool avoidsAdjacentExtremeSwap(const QVector<NoteEvent> &source,const char *mess
     }
     return true;
 }
+
+int auditScore(const QString &path){
+    QVector<NoteEvent> source;QString title,error;int tempo=0;
+    if(!MusicDocument::importFile(path,source,title,tempo,&error)){
+        std::cerr<<"IMPORT\t"<<path.toStdString()<<"\t"<<error.toStdString()<<'\n';return 1;
+    }
+    ScoreWidget score;score.setNotes(source);auto notes=score.notes();
+    int failures=0;
+    for(const Hand hand:{Hand::Left,Hand::Right}){
+        QVector<NoteEvent> handNotes;for(const auto &note:notes)if(note.hand==hand)handNotes.append(note);
+        std::sort(handNotes.begin(),handNotes.end(),[](const auto &a,const auto &b){return a.start==b.start?a.note<b.note:a.start<b.start;});
+        for(int cursor=0;cursor<handNotes.size();){
+            int end=cursor+1;while(end<handNotes.size()&&qAbs(handNotes[end].start-handNotes[cursor].start)<.015)++end;
+            QMap<int,int> pitchFingers;
+            for(int index=cursor;index<end;++index){
+                const auto &note=handNotes[index];
+                if(note.finger<1||note.finger>5||(pitchFingers.contains(note.note)&&pitchFingers.value(note.note)!=note.finger)){
+                    std::cerr<<"CHORD\t"<<path.toStdString()<<'\t'<<(hand==Hand::Left?'L':'R')<<'\t'<<note.start<<'\t'<<note.note<<'\t'<<note.finger<<'\n';++failures;
+                }
+                pitchFingers[note.note]=note.finger;
+            }
+            if(pitchFingers.size()<=5){
+                QSet<int> used;int previousFinger=hand==Hand::Left?6:0;
+                for(auto it=pitchFingers.cbegin();it!=pitchFingers.cend();++it){
+                    const bool bad=used.contains(it.value())||(hand==Hand::Right?it.value()<=previousFinger:it.value()>=previousFinger);
+                    if(bad){std::cerr<<"CHORD\t"<<path.toStdString()<<'\t'<<(hand==Hand::Left?'L':'R')<<'\t'<<handNotes[cursor].start<<'\t'<<it.key()<<'\t'<<it.value()<<'\n';++failures;}
+                    used.insert(it.value());previousFinger=it.value();
+                }
+            }
+            if(end-cursor==1){
+                int next=end,nextEnd=next+1;while(nextEnd<handNotes.size()&&qAbs(handNotes[nextEnd].start-handNotes[next].start)<.015)++nextEnd;
+                if(next<handNotes.size()&&nextEnd-next==1){
+                    const auto &a=handNotes[cursor],&b=handNotes[next];const int interval=b.note-a.note,span=qAbs(interval),fingerSpan=qAbs(b.finger-a.finger);
+                    const double delta=b.start-a.start;const int fingerDirection=b.finger-a.finger;
+                    const int expectedDirection=hand==Hand::Right?interval:-interval;
+                    const bool adjacentExtreme=delta<=1.25&&span<=4&&fingerSpan==4;
+                    const bool badDirection=delta<=1.25&&span>=3&&span<=7&&(fingerDirection==0||(expectedDirection>0?fingerDirection<0:fingerDirection>0));
+                    const bool badRepeat=delta<=1.25&&span==0&&a.finger!=b.finger;
+                    if(adjacentExtreme||badDirection||badRepeat){
+                        std::cerr<<"MOVE\t"<<path.toStdString()<<'\t'<<(hand==Hand::Left?'L':'R')<<'\t'<<a.start<<'\t'<<a.note<<':'<<a.finger<<"->"<<b.note<<':'<<b.finger<<"\tdt="<<delta<<"\t"<<(badDirection?"direction":badRepeat?"repeat":"adjacent")<<'\n';++failures;
+                    }
+                }
+            }
+            cursor=end;
+        }
+    }
+    std::cout<<"AUDIT\t"<<path.toStdString()<<"\tnotes="<<notes.size()<<"\tfailures="<<failures<<'\n';
+    return failures;
+}
+
+int dumpScore(const QString &path){
+    QVector<NoteEvent> source;QString title,error;int tempo=0;
+    if(!MusicDocument::importFile(path,source,title,tempo,&error)){std::cerr<<error.toStdString()<<'\n';return 1;}
+    ScoreWidget score;score.setNotes(source);auto notes=score.notes();
+    std::sort(notes.begin(),notes.end(),[](const auto &a,const auto &b){return a.start==b.start?(a.hand==b.hand?a.note<b.note:int(a.hand)<int(b.hand)):a.start<b.start;});
+    for(const auto &note:notes)std::cout<<note.start<<'\t'<<(note.hand==Hand::Left?'L':'R')<<'\t'<<note.note<<'\t'<<note.finger<<'\t'<<note.duration<<'\n';
+    return 0;
+}
 }
 
 int main(int argc,char **argv){
     QApplication app(argc,argv);bool ok=true;
 
+    if(argc==3&&QString::fromLocal8Bit(argv[1])=="--audit-tree"){
+        int files=0,failures=0;QDirIterator iterator(QString::fromLocal8Bit(argv[2]),QDir::Files,QDirIterator::Subdirectories);
+        while(iterator.hasNext()){
+            const QString path=iterator.next();const QString suffix=QFileInfo(path).suffix().toLower();
+            if(suffix!="mid"&&suffix!="midi"&&suffix!="musicxml"&&suffix!="mxl"&&suffix!="varpeggio")continue;
+            ++files;failures+=auditScore(path);
+        }
+        std::cout<<"TOTAL\tfiles="<<files<<"\tfailures="<<failures<<'\n';return failures?2:0;
+    }
+    if(argc==3&&QString::fromLocal8Bit(argv[1])=="--dump")return dumpScore(QString::fromLocal8Bit(argv[2]));
+
     ok&=equals(suggested(phrase({60,62,64,65,67},Hand::Right)),{1,2,3,4,5},"right-hand ascending five-finger position");
     ok&=equals(suggested(phrase({67,65,64,62},Hand::Right)),{5,4,3,2},"right-hand descending short phrase");
     ok&=equals(suggested(phrase({48,50,52,53,55},Hand::Left)),{5,4,3,2,1},"left-hand ascending five-finger position");
     ok&=equals(suggested(phrase({55,53,52,50},Hand::Left)),{1,2,3,4},"left-hand descending short phrase");
+    ok&=equals(suggested(phrase({48,55},Hand::Left)),{5,1},"left-hand C-to-G leap uses little finger to thumb");
+    ok&=equals(suggested(phrase({48,52,55},Hand::Left)),{5,3,1},"left-hand C-E-G outline uses its actual interval spacing");
+    ok&=equals(suggested(phrase({45,48,55},Hand::Left)),{5,3,1},"left-hand A-C-G outline anchors pinky low and thumb high");
+    ok&=equals(suggested(phrase({60,67},Hand::Right)),{1,5},"right-hand C-to-G leap uses thumb to little finger");
+    const auto hallelujahContour=suggested(phrase({48,55,47,45,52,57,45,48,55},Hand::Left));
+    ok&=check(hallelujahContour.size()==9&&hallelujahContour[0]==5&&hallelujahContour[1]==1&&
+                  hallelujahContour[6]==5&&hallelujahContour[7]==3&&hallelujahContour[8]==1,
+              "left hand uses 5-1 for a fifth and 5-3-1 when that fifth belongs to A-C-G");
+
+    QVector<NoteEvent> octaveReset{{57,0,.8,80,Hand::Left},{45,2,.4,80,Hand::Left},{48,2.5,.4,80,Hand::Left},{55,3,.4,80,Hand::Left}};
+    ok&=equals(suggested(octaveReset),{3,5,3,1},"left hand resets an octave-down A-C-G phrase onto pinky-middle-thumb");
+    ok&=equals(suggested(phrase({47,45,52,57},Hand::Left)),{4,5,2,1},"left-hand B-A-E-A accompaniment spans the hand instead of moving one thumb");
 
     ok&=equals(suggested(phrase({60,62,64,65,67,69,71,72},Hand::Right)),{1,2,3,1,2,3,4,5},"right-hand one-octave C-major scale");
     ok&=equals(suggested(phrase({48,50,52,53,55,57,59,60},Hand::Left)),{5,4,3,2,1,3,2,1},"left-hand one-octave C-major scale");
+    ok&=equals(suggested(phrase({21,24,28},Hand::Left)),{5,3,1},"lowest-register A0-C1-E1 outline uses pinky-middle-thumb");
+    ok&=equals(suggested(phrase({28,24,21},Hand::Left)),{1,3,5},"lowest-register E1-C1-A0 descent mirrors the physical hand");
+    ok&=equals(suggested(phrase({21,33},Hand::Left)),{5,1},"lowest-register octave rises from pinky to thumb");
+    ok&=equals(suggested(phrase({33,21},Hand::Left)),{1,5},"lowest-register octave falls from thumb to pinky");
 
-    const auto bFlatRoutine=MusicDocument::scaleRoutine(10);
+    ScoreWidget bFlatScore;bFlatScore.setNotes(MusicDocument::scaleRoutine(10));
+    const auto bFlatRoutine=bFlatScore.notes();
     QVector<int> bFlatRightFingers;
     QVector<int> bFlatRightPitches;
     for(const auto &note:bFlatRoutine){
@@ -80,6 +168,54 @@ int main(int argc,char **argv){
     QVector<NoteEvent> chords{{60,0,1,88,Hand::Right},{64,0,1,88,Hand::Right},{67,0,1,88,Hand::Right},
                               {48,1,1,80,Hand::Left},{52,1,1,80,Hand::Left},{55,1,1,80,Hand::Left}};
     ok&=equals(suggested(chords),{1,3,5,5,3,1},"triads receive conventional outside-to-outside fingering");
+    QVector<NoteEvent> lowChord{{21,0,1,80,Hand::Left},{24,0,1,80,Hand::Left},{28,0,1,80,Hand::Left}};
+    ok&=equals(suggested(lowChord),{5,3,1},"A0-C1-E1 chord remains physically ordered at the bottom of the piano");
+    ScoreWidget compactFrame;compactFrame.setNotes(phrase({60,62,64},Hand::Right));compactFrame.setShowFingering(true);
+    ok&=check(compactFrame.recommendedFrameHeight()==212,"single-note fingering keeps the compact score frame");
+    ScoreWidget dyadFrame;dyadFrame.setNotes({{48,0,2,80,Hand::Left},{55,0,2,80,Hand::Left}});dyadFrame.setShowFingering(true);
+    ScoreWidget largeChordFrame;largeChordFrame.setNotes({{48,0,2,80,Hand::Left},{52,0,2,80,Hand::Left},{55,0,2,80,Hand::Left},{60,0,2,80,Hand::Left}});largeChordFrame.setShowFingering(true);
+    ok&=check(dyadFrame.recommendedFrameHeight()>212&&largeChordFrame.recommendedFrameHeight()==dyadFrame.recommendedFrameHeight(),"vertical chord fingering exposes the complete safe canvas without clipping either edge");
+    largeChordFrame.setShowFingering(false);ok&=check(largeChordFrame.recommendedFrameHeight()==212,"hiding fingering restores the compact score frame");
+
+    QVector<NoteEvent> rightDyadContext{{60,0,.45,88,Hand::Right},{67,0,.45,88,Hand::Right},
+                                        {64,.5,.45,88,Hand::Right},{67,.5,.45,88,Hand::Right}};
+    ok&=equals(suggested(rightDyadContext),{1,5,3,5},"right-hand C-G to E-G retains G on 5 and moves E to 3");
+    QVector<NoteEvent> leftDyadContext{{48,0,.45,80,Hand::Left},{55,0,.45,80,Hand::Left},
+                                       {48,.5,.45,80,Hand::Left},{52,.5,.45,80,Hand::Left}};
+    ok&=equals(suggested(leftDyadContext),{5,1,5,3},"left-hand C-G to C-E retains C on 5 and moves E to 3");
+    QVector<NoteEvent> firstInversion{{64,0,1,88,Hand::Right},{67,0,1,88,Hand::Right},{72,0,1,88,Hand::Right}};
+    ok&=equals(suggested(firstInversion),{1,2,5},"recognized right-hand first-inversion C major uses 1-2-5");
+    QVector<NoteEvent> secondInversion{{43,0,1,80,Hand::Left},{48,0,1,80,Hand::Left},{52,0,1,80,Hand::Left}};
+    ok&=equals(suggested(secondInversion),{5,2,1},"recognized left-hand second-inversion C major uses 5-2-1");
+    QVector<NoteEvent> chordToMelody{{60,0,.45,88,Hand::Right},{67,0,.45,88,Hand::Right},
+                                     {64,.5,.45,88,Hand::Right},{67,.5,.45,88,Hand::Right},
+                                     {60,1,.45,88,Hand::Right},{67,1.5,.45,88,Hand::Right},
+                                     {69,2,.45,88,Hand::Right},{69,2.5,.45,88,Hand::Right}};
+    ok&=equals(suggested(chordToMelody),{1,5,3,5,1,4,5,5},"right hand follows the physical search from C through G into repeated A notes");
+    QVector<NoteEvent> outerBandMelody{{64,0,.45,88,Hand::Right},{71,0,.45,88,Hand::Right},
+                                       {71,.5,.45,88,Hand::Right},{69,1,.45,88,Hand::Right}};
+    ok&=equals(suggested(outerBandMelody),{1,5,5,4},"short B-to-A phrase keeps the conventional neighboring-finger position");
+    QVector<NoteEvent> parallelThirds{{60,0,.45,88,Hand::Right},{64,0,.45,88,Hand::Right},
+                                      {62,.5,.45,88,Hand::Right},{65,.5,.45,88,Hand::Right},
+                                      {64,1,.45,88,Hand::Right},{67,1,.45,88,Hand::Right}};
+    ok&=equals(suggested(parallelThirds),{1,3,2,4,3,5},"successive right-hand thirds move through 1-3, 2-4, and 3-5 as one hand position");
+    QVector<NoteEvent> leftParallelThirds{{48,0,.45,80,Hand::Left},{52,0,.45,80,Hand::Left},
+                                          {50,.5,.45,80,Hand::Left},{53,.5,.45,80,Hand::Left},
+                                          {52,1,.45,80,Hand::Left},{55,1,.45,80,Hand::Left}};
+    ok&=equals(suggested(leftParallelThirds),{5,3,4,2,3,1},"successive left-hand thirds mirror one hand position");
+
+    for(int variation=0;variation<3;++variation){
+        ScoreWidget drill;drill.setNotes(MusicDocument::chordRoutine(variation));
+        int bassCount=0,pinkyCount=0;
+        for(const auto &note:drill.notes()){
+            ok&=check(note.finger>=1&&note.finger<=5,"every chord-drill note passes through the shared fingering optimizer");
+            if(note.hand==Hand::Left){++bassCount;if(note.finger==5)++pinkyCount;}
+        }
+        ok&=check(bassCount==4&&pinkyCount<bassCount,"daily chord drill does not hard-code every bass note to the pinky");
+    }
+    ok&=equals(suggested(MusicDocument::chordRoutine(1)),
+               {5,1,3,5,1,1,3,5,3,1,3,5,2,1,3,5},
+               "C-A-F-G chord drill uses a connected 5-1-3-2 bass phrase and conventional right-hand triads");
 
     QVector<NoteEvent> authored=phrase({60,62,64},Hand::Right);authored[0].finger=2;authored[1].finger=4;authored[2].finger=5;
     ok&=equals(suggested(authored),{2,4,5},"authored fingering is never overwritten");
@@ -88,13 +224,35 @@ int main(int argc,char **argv){
     const auto stressFingers=suggested(stress);for(int finger:stressFingers)ok&=check(finger>=1&&finger<=5,"stress phrase assigns every note a valid finger");
     ok&=avoidsAdjacentExtremeSwap(stress,"long scale stress test avoids adjacent extreme swaps");
 
-    // An optional visual artifact exercises the full 88-key renderer with a
-    // synchronized chord. It is used by the screenshot QA pass, while ctest
-    // continues to run without writing anything.
+    QVector<NoteEvent> boundaryStress{{52,0,.2,80,Hand::Left},{56,.25,.2,80,Hand::Left},{55,.5,.2,80,Hand::Left},{59,.75,.2,80,Hand::Left},
+                                      {41,2,.2,80,Hand::Left},{40,2.5,.2,80,Hand::Left},{48,4,.2,80,Hand::Left},{48,4.5,.2,80,Hand::Left}};
+    const auto repaired=suggested(boundaryStress);
+    ok&=check(qAbs(repaired[1]-repaired[0])<4&&qAbs(repaired[3]-repaired[2])<4&&qAbs(repaired[5]-repaired[4])<4,
+              "left-hand boundary repair removes nearby thumb-pinky teleports");
+    ok&=check(repaired[6]==repaired[7],"left-hand repeated key keeps one stable finger across a phrase boundary");
+
+    QVector<NoteEvent> rightBoundaryStress{{60,0,.2,80,Hand::Right},{64,.25,.2,80,Hand::Right},{63,.5,.2,80,Hand::Right},{67,.75,.2,80,Hand::Right},
+                                           {79,2,.2,80,Hand::Right},{78,2.5,.2,80,Hand::Right},{72,4,.2,80,Hand::Right},{72,4.5,.2,80,Hand::Right}};
+    const auto rightRepaired=suggested(rightBoundaryStress);
+    ok&=check(qAbs(rightRepaired[1]-rightRepaired[0])<4&&qAbs(rightRepaired[3]-rightRepaired[2])<4&&qAbs(rightRepaired[5]-rightRepaired[4])<4,
+              "right-hand boundary repair removes nearby thumb-pinky teleports");
+    ok&=check(rightRepaired[6]==rightRepaired[7],"right-hand repeated key keeps one stable finger across a phrase boundary");
+    ok&=equals(suggested(phrase({96,100,103},Hand::Right)),{1,3,5},"highest-register C7-E7-G7 outline uses thumb-middle-pinky");
+    ok&=equals(suggested(phrase({103,100,96},Hand::Right)),{5,3,1},"highest-register G7-E7-C7 descent mirrors the physical hand");
+
+    // An optional visual artifact exercises the default 61-key physical range
+    // within the full 88-key renderer. Outer keys remain visible but inactive;
+    // the centre chord verifies synchronized fingering badges.
     if(argc>1){
         PianoWidget piano;piano.resize(1760,168);piano.setFingerHints({{60,1},{64,3},{67,5}});piano.setActive(60,true);
         QImage image(piano.size(),QImage::Format_ARGB32_Premultiplied);image.fill(Qt::transparent);QPainter painter(&image);piano.render(&painter);painter.end();
         ok&=check(image.save(QString::fromLocal8Bit(argv[1])),"keyboard fingering screenshot was saved");
+    }
+    if(argc>2){
+        auto notes=MusicDocument::odeToJoy();for(auto &note:notes)note.note+=9;
+        ScoreWidget score;score.setNotes(notes);score.setKeySignatures({{0.0,3}});score.setShowNames(true);score.setShowFingering(true);score.setFollowBeat(0);score.resize(1100,440);
+        QImage image(1100,440,QImage::Format_ARGB32_Premultiplied);image.fill(Qt::transparent);QPainter painter(&image);score.paintScore(painter,QRectF(0,0,1100,440));painter.end();
+        ok&=check(image.save(QString::fromLocal8Bit(argv[2])),"dense left-hand fingering screenshot was saved");
     }
 
     if(!ok)return 1;
