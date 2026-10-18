@@ -72,7 +72,8 @@ private:
 
     void setMode(Mode mode);
     void setSong(const QString &title, const QVector<NoteEvent> &notes, int tempo = 96,
-                 const QVector<PedalEvent> &pedals = {});
+                 const QVector<PedalEvent> &pedals = {}, int keyFifths = 99,
+                 const QString &writtenKeyName = {});
     void setHandFilter(int filter);
     void rebuildPractice();
     void updateExpected();
@@ -161,6 +162,9 @@ private:
     double m_freePlayEditAdvance = 0.0;
     int m_routineVariation = 0;
     int m_routineStep = -1;
+    int m_songKeyFifths = 0;
+    bool m_songKeyExplicit = false;
+    QString m_songWrittenKeyName;
     QDate m_routinePlanDate;
     QSet<int> m_routineCompletedSteps;
     int m_earTrainingRound = 0;

@@ -99,10 +99,17 @@ Soundtrack-only polyphonic transcription remains experimental. Clean solo piano 
 
 ## Changelog
 
+### 0.2.46 — 2026-10-17
+
+- Rebuilt Daily Practice as a 60-day written-key curriculum: fifteen conventional major-key spellings plus natural, harmonic, and classical melodic minor as three separate full days for each of the fifteen minor-key spellings. Enharmonic written keys such as F-sharp/G-flat and C-sharp/D-flat remain distinct lessons; the advanced end of the cycle includes D-sharp, A-sharp, E-flat, and A-flat minor rather than silently renaming them.
+- Each day still contains seven chapters and twenty-one right-hand, left-hand, and together steps. A natural-minor day never inserts harmonic or melodic scale material; harmonic and melodic minor have their own dates. Natural-minor cadence/pedal days use `i–iv–v–i`, while harmonic and melodic days use the raised leading tone in `i–iv–V–i`.
+- Added exact written-note support for theoretical spellings including C-flat, E-sharp, B-sharp, and double sharps. Sounding MIDI pitch, staff position, accidental glyph, and note-name hint now agree in the extreme written keys.
+
 ### 0.2.45 — 2026-10-17
 
 - Expanded all seven Daily Practice chapters into the same right-hand, left-hand, then together sequence. Scales, arpeggios, inversions, cadence, pedal changes, ear training, and repertoire now form 21 explicit guided steps instead of combining or skipping hands in some chapters. Pedal work remains its own chapter rather than being folded into cadence.
-- Added fully separate minor-key days to the date rotation. Every one of the 21 steps on a minor day uses minor material—including harmonic-minor scales, minor arpeggios and inversions, a minor-key `i–iv–V–i` cadence, pedal harmony, and minor-mode repertoire—while major days remain entirely major.
+- Added separate major-key and minor-key days to the date rotation. Every one of the 21 steps on a minor day uses minor material, while major days remain entirely major. Version 0.2.46 subsequently separated the three minor forms into their own dates.
+- Corrected written minor-scale generation for natural, harmonic, and classical melodic forms. For example, D natural minor uses B-flat/C-natural, D harmonic minor uses B-flat/C-sharp, and D melodic minor raises B/C while ascending before returning through the natural form while descending. Daily lessons now carry an explicit written key signature instead of guessing C major from chromatic scale notes.
 - Split ear training into a right-hand register, a left-hand register, and a combined prompt spanning both hands.
 - Fixed the Daily Plan cadence-pattern control so it gives immediate named feedback and the selected block, rising broken, or falling broken pattern is carried into all three cadence steps.
 

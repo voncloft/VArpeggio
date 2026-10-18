@@ -74,7 +74,7 @@
 #include <limits>
 
 #ifndef VARPEGGIO_VERSION
-#define VARPEGGIO_VERSION "0.2.45"
+#define VARPEGGIO_VERSION "0.2.46"
 #endif
 
 namespace {
@@ -118,26 +118,26 @@ QFrame *line(bool vertical=false){auto*f=new QFrame;f->setFrameShape(vertical?QF
 void shadow(QWidget*w){auto*s=new QGraphicsDropShadowEffect(w);s->setBlurRadius(32);s->setOffset(0,10);s->setColor(QColor(24,49,45,24));w->setGraphicsEffect(s);}
 QString safeName(QString name){name=name.trimmed().replace(QRegularExpression("[^A-Za-z0-9._-]+"),"-");return name.isEmpty()?"varpeggio-score":name;}
 
-struct DailyRoutineTheme { QString keyName; int transpose=0; int index=0; int chordOrder=0; int earFocus=0; bool useOde=false; bool minor=false; };
+QString majorKeyNameForFifths(int fifths){const QStringList names{"C♭ major","G♭ major","D♭ major","A♭ major","E♭ major","B♭ major","F major","C major","G major","D major","A major","E major","B major","F♯ major","C♯ major"};return names[qBound(-7,fifths,7)+7];}
+struct DailyRoutineTheme { QString keyName; int transpose=0; int fifths=0; int index=0; int chordOrder=0; int earFocus=0; bool useOde=false; bool minor=false; int minorForm=-1; };
 DailyRoutineTheme dailyRoutineTheme(const QDate &date){
-    struct KeyChoice{QString name;int tonic;bool minor;};
-    const QVector<KeyChoice> rotation{
-        {"C major",0,false},{"A minor",9,true},{"G major",7,false},{"E minor",4,true},
-        {"F major",5,false},{"D minor",2,true},{"D major",2,false},{"B minor",11,true},
-        {"B♭ major",10,false},{"G minor",7,true},{"A major",9,false},{"F♯ minor",6,true},
-        {"E♭ major",3,false},{"C minor",0,true}
+    struct SignatureChoice{QString majorName,minorName;int majorTonic,minorTonic,fifths;};
+    const QVector<SignatureChoice> signatures{
+        {"C","A",0,9,0},{"G","E",7,4,1},{"F","D",5,2,-1},{"D","B",2,11,2},{"B♭","G",10,7,-2},
+        {"A","F♯",9,6,3},{"E♭","C",3,0,-3},{"E","C♯",4,1,4},{"A♭","F",8,5,-4},{"B","G♯",11,8,5},
+        {"D♭","B♭",1,10,-5},{"F♯","D♯",6,3,6},{"G♭","E♭",6,3,-6},{"C♯","A♯",1,10,7},{"C♭","A♭",11,8,-7}
     };
+    struct KeyChoice{QString name;int tonic;int fifths;bool minor;int minorForm;};QVector<KeyChoice> rotation;rotation.reserve(signatures.size()*4);
+    for(const auto &signature:signatures){rotation.append({signature.majorName+" major",signature.majorTonic,signature.fifths,false,-1});rotation.append({signature.minorName+" natural minor",signature.minorTonic,signature.fifths,true,0});rotation.append({signature.minorName+" harmonic minor",signature.minorTonic,signature.fifths,true,1});rotation.append({signature.minorName+" melodic minor",signature.minorTonic,signature.fifths,true,2});}
     const qint64 day=date.toJulianDay();const int index=int(day%rotation.size());
-    return {rotation[index].name,rotation[index].tonic,index,int(day%3),int(day%4),bool(day%2),rotation[index].minor};
+    return {rotation[index].name,rotation[index].tonic,rotation[index].fifths,index,int(day%3),int(day%4),bool(day%2),rotation[index].minor,rotation[index].minorForm};
 }
 QString earFocusName(int focus){const QStringList names{"Single-note recognition","Major and minor chord recognition","Interval recognition","Mixed notes and chords"};return names[qBound(0,focus,names.size()-1)];}
-QVector<NoteEvent> transposed(QVector<NoteEvent> notes,int semitones){
-    for(auto &note:notes)note.note=qBound(0,note.note+semitones,127);
-    return notes;
-}
-QVector<NoteEvent> transposedMode(QVector<NoteEvent> notes,int semitones,bool minor){
-    if(!minor)return transposed(std::move(notes),semitones);
-    for(auto &note:notes){const int pitchClass=(note.note%12+12)%12;const int modalOffset=(pitchClass==4||pitchClass==9||pitchClass==11)?-1:0;note.note=qBound(0,note.note+semitones+modalOffset,127);}
+QString dailyEarFocusName(int focus,bool minor){if(focus==1)return minor?"Minor chord recognition":"Major chord recognition";if(focus==3)return minor?"Mixed notes and minor chords":"Mixed notes and major chords";return earFocusName(focus);}
+QString scaleFormDetail(const DailyRoutineTheme &theme){if(!theme.minor)return "major scale";if(theme.minorForm==0)return "natural minor scale";if(theme.minorForm==1)return "harmonic minor scale · raised seventh";return "classical melodic minor · raised sixth and seventh ascending";}
+QVector<NoteEvent> transposedMode(QVector<NoteEvent> notes,int semitones,bool minor,int keyFifths=99){
+    static const int cMajorDegree[]={0,-1,1,-1,2,3,-1,4,-1,5,-1,6};
+    for(auto &note:notes){const int sourcePitchClass=(note.note%12+12)%12;const int degree=cMajorDegree[sourcePitchClass];const int modalOffset=minor&&(sourcePitchClass==4||sourcePitchClass==9||sourcePitchClass==11)?-1:0;note.note=qBound(0,note.note+semitones+modalOffset,127);if(degree>=0)MusicDocument::applyLessonSpelling(note,semitones,minor,degree,keyFifths);}
     return notes;
 }
 
@@ -763,6 +763,9 @@ QWidget *MainWindow::buildWorkspace() {
   m_routineStepLabel = label(QString("DAILY PLAN · STEP 1 OF %1").arg(dailyRoutineStageCount), "routineSessionStep");
   m_routineDetailLabel =
       label("C major scale · Right hand", "routineSessionDetail");
+  m_routineDetailLabel->setWordWrap(true);
+  m_routineDetailLabel->setMinimumWidth(0);
+  m_routineDetailLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
   routineText->addWidget(m_routineStepLabel);
   routineText->addWidget(m_routineDetailLabel);
   rsl->addLayout(routineText, 1);
@@ -770,7 +773,10 @@ QWidget *MainWindow::buildWorkspace() {
   m_routineNextButton = button("Next step →", "routineSessionPrimary");
   auto *endRoutine = button("Close plan", "routineSessionSecondary");
   for (auto *b : {m_routinePreviousButton, m_routineNextButton, endRoutine})
+  {
     b->setMinimumHeight(34);
+    b->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
+  }
   rsl->addWidget(m_routinePreviousButton);
   rsl->addWidget(m_routineNextButton);
   rsl->addWidget(endRoutine);
@@ -789,6 +795,7 @@ QWidget *MainWindow::buildWorkspace() {
     m_synth.stopSequence();
     m_routineStep = -1;
     m_routineSession->hide();
+    m_score->setLessonOpeningInset(false);
     toast("Practice plan closed");
   });
   m_routineSession->hide();
@@ -2068,8 +2075,7 @@ void MainWindow::setMode(Mode mode) {
   } else if (mode != Mode::Free && previous == Mode::Free) {
     m_score->setEditCursorBeat(-1);
     m_score->setTimeSignatures({{0.0, 4, 4}});
-    m_score->setKeySignatures(
-        {{0.0, MusicDocument::inferKeySignature(filteredNotes())}});
+    m_score->setKeySignatures({{0.0,m_songKeyExplicit?m_songKeyFifths:MusicDocument::inferKeySignature(filteredNotes())}});
     m_score->setRests({});
     m_score->setRepeatEnds({});
     m_score->setPedalEvents(m_songPedals);
@@ -2094,7 +2100,7 @@ void MainWindow::setMode(Mode mode) {
   }
   updatePrimaryButton();
 }
-void MainWindow::setSong(const QString&title,const QVector<NoteEvent>&notes,int tempo,const QVector<PedalEvent>&pedals){stopPlayback(false);clearMeasureDrill(false);clearImportedMediaSource();m_bubble->resetState();m_title=title;m_notes=notes;m_songPedals=pedals;std::sort(m_songPedals.begin(),m_songPedals.end(),[](const auto&a,const auto&b){return a.beat<b.beat;});rebuildKeyboardReleaseBeats();m_tempo=qBound(30,tempo,260);m_titleEdit->setText(title);m_titleEdit->setCursorPosition(0);if(m_tempoControl){const QSignalBlocker blocker(m_tempoControl);m_tempoControl->setValue(m_tempo);}m_pdfDocument->close();m_generatedScoreDir.reset();m_scoreViewButton->setText("Exact PDF");m_scoreViewButton->hide();m_liveScoreButton->hide();m_liveScoreButton->setEnabled(true);m_liveScoreButton->setChecked(true);m_scoreStack->setCurrentWidget(m_score);m_score->setTimeSignatures({{0.0,4,4}});m_score->setKeySignatures({{0.0,MusicDocument::inferKeySignature(notes)}});m_score->setRests({});m_score->setRepeatEnds({});m_score->setPedalEvents(m_songPedals);m_score->setNotes(notes);m_bubble->setNotes(notes);m_notice->hide();rebuildPractice();updateSongMeta();}
+void MainWindow::setSong(const QString&title,const QVector<NoteEvent>&notes,int tempo,const QVector<PedalEvent>&pedals,int keyFifths,const QString&writtenKeyName){stopPlayback(false);clearMeasureDrill(false);clearImportedMediaSource();m_bubble->resetState();m_title=title;m_notes=notes;m_songPedals=pedals;m_songKeyExplicit=keyFifths>=-7&&keyFifths<=7;m_songKeyFifths=m_songKeyExplicit?keyFifths:MusicDocument::inferKeySignature(notes);m_songWrittenKeyName=writtenKeyName;std::sort(m_songPedals.begin(),m_songPedals.end(),[](const auto&a,const auto&b){return a.beat<b.beat;});rebuildKeyboardReleaseBeats();m_tempo=qBound(30,tempo,260);m_titleEdit->setText(title);m_titleEdit->setCursorPosition(0);m_statusLabel->setText(m_songWrittenKeyName.isEmpty()?majorKeyNameForFifths(m_songKeyFifths):m_songWrittenKeyName);if(m_tempoControl){const QSignalBlocker blocker(m_tempoControl);m_tempoControl->setValue(m_tempo);}m_pdfDocument->close();m_generatedScoreDir.reset();m_scoreViewButton->setText("Exact PDF");m_scoreViewButton->hide();m_liveScoreButton->hide();m_liveScoreButton->setEnabled(true);m_liveScoreButton->setChecked(true);m_scoreStack->setCurrentWidget(m_score);m_score->setLessonOpeningInset(false);m_score->setTimeSignatures({{0.0,4,4}});m_score->setKeySignatures({{0.0,m_songKeyFifths}});m_score->setRests({});m_score->setRepeatEnds({});m_score->setPedalEvents(m_songPedals);m_score->setNotes(notes);m_bubble->setNotes(notes);m_notice->hide();rebuildPractice();updateSongMeta();}
 void MainWindow::setExactScoreAvailable(const QString &label){m_scoreViewButton->setText(label);m_scoreViewButton->show();m_liveScoreButton->setEnabled(!m_notes.isEmpty());m_liveScoreButton->show();m_scoreViewButton->setChecked(true);m_scoreStack->setCurrentWidget(m_pdfView);}
 
 void MainWindow::updatePrimaryButton(){if(m_playing){m_playButton->setText("Ⅱ  Pause");return;}if(m_playbackPaused){m_playButton->setText("▶  Resume");return;}if(m_earTraining){m_playButton->setText("♫  Hear again");return;}switch(m_mode){case Mode::Wait:m_playButton->setText(drillActive()?"◎  Restart drill":"◎  Restart wait");break;case Mode::Listen:m_playButton->setText("▶  Listen");break;case Mode::Follow:m_playButton->setText("▶  Play along");break;case Mode::Free:m_playButton->setText("▶  Preview score");break;}}
@@ -2113,7 +2119,7 @@ QSet<int> MainWindow::activeWaitAttackNotes()const{
             required.insert(note.note);
     return required;
 }
-void MainWindow::setHandFilter(int filter){if(m_playing||m_playbackPaused)stopPlayback(true);m_handFilter=filter;m_score->setHandFilter(filter);m_bubble->setHandFilter(filter);if(m_mode!=Mode::Free)m_score->setKeySignatures({{0.0,MusicDocument::inferKeySignature(filteredNotes())}});rebuildPractice();QString hand=filter<0?"Hands together":filter==0?"Left hand":"Right hand";toast(hand+" practice");}
+void MainWindow::setHandFilter(int filter){if(m_playing||m_playbackPaused)stopPlayback(true);m_handFilter=filter;m_score->setHandFilter(filter);m_bubble->setHandFilter(filter);if(m_mode!=Mode::Free)m_score->setKeySignatures({{0.0,m_songKeyExplicit?m_songKeyFifths:MusicDocument::inferKeySignature(filteredNotes())}});rebuildPractice();QString hand=filter<0?"Hands together":filter==0?"Left hand":"Right hand";toast(hand+" practice");}
 bool MainWindow::drillActive()const{return !m_drillMeasures.isEmpty();}
 QString MainWindow::drillMeasureLabel()const{
     if(m_drillMeasures.isEmpty())return "no measures";
@@ -3364,18 +3370,20 @@ void MainWindow::openRoutineDialog(){
     const QDate today=QDate::currentDate();QDate viewedDate=today;int viewedVariation=dailyRoutineTheme(viewedDate).chordOrder;
     QDialog d(this);d.setObjectName("routinePlanDialog");d.setWindowTitle("Daily practice plan");
     const int dialogWidth=qMin(920,qMax(740,width()-60));const int dialogHeight=qMin(800,qMax(720,height()-60));d.setMinimumSize(dialogWidth,dialogHeight);d.resize(dialogWidth,dialogHeight);d.setModal(true);
-    auto*l=new QVBoxLayout(&d);l->setContentsMargins(24,22,24,20);l->setSpacing(12);
+    auto*l=new QVBoxLayout(&d);l->setContentsMargins(24,18,24,16);l->setSpacing(9);
     const QFontMetrics routineMetrics(QApplication::font());
     auto*head=label("","routineDialogTitle");head->setAlignment(Qt::AlignCenter);QFont headFont=QApplication::font();headFont.setBold(true);headFont.setPointSizeF(qMax<qreal>(headFont.pointSizeF()+2.0,12.0));head->setFont(headFont);l->addWidget(head);
     auto*dateNav=new QHBoxLayout;auto*previousDay=button("← Previous day","routineDialogSecondary");auto*todayButton=button("Today","routineDialogSecondary");auto*nextDay=button("Next day →","routineDialogSecondary");dateNav->addStretch();dateNav->addWidget(previousDay);dateNav->addWidget(todayButton);dateNav->addWidget(nextDay);dateNav->addStretch();l->addLayout(dateNav);
-    auto*intro=label("Start once, then use Previous and Next above the score. VArpeggio carries you through both hands and the full piece without reopening this window.");intro->setWordWrap(true);intro->setStyleSheet("color:#526862;margin-bottom:4px");intro->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Minimum);intro->setMinimumHeight(intro->fontMetrics().height()*3+8);l->addWidget(intro);
-    QVector<QPair<QLabel*,QLabel*>> planRows;auto addPlanRow=[&](const QString &number){auto*row=new QFrame;row->setMinimumHeight(routineMetrics.height()*2+22);row->setStyleSheet("QFrame{background:#fffefa;border:1px solid #dedbd1;border-radius:9px}");auto*rl=new QHBoxLayout(row);rl->setContentsMargins(13,7,13,7);auto*n=label(number);n->setStyleSheet("color:#ef775f;font-weight:800;border:0");rl->addWidget(n);auto*copy=new QVBoxLayout;copy->setSpacing(1);auto*t=label("");t->setWordWrap(true);t->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Minimum);t->setStyleSheet("font-weight:800;border:0");auto*sub=label("");sub->setWordWrap(true);sub->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Minimum);sub->setStyleSheet("color:#71807c;border:0");copy->addWidget(t);copy->addWidget(sub);rl->addLayout(copy,1);l->addWidget(row);planRows.append(qMakePair(t,sub));};for(const QString &number:{QStringLiteral("01"),QStringLiteral("02"),QStringLiteral("03"),QStringLiteral("04"),QStringLiteral("05"),QStringLiteral("06"),QStringLiteral("07")})addPlanRow(number);
-    auto*variation=label("");variation->setStyleSheet("color:#71807c");
+    auto*intro=label("Start once, then use Previous and Next above the score. VArpeggio carries you through both hands and the full piece without reopening this window.");intro->setWordWrap(true);intro->setStyleSheet("color:#526862;margin-bottom:2px");intro->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Minimum);intro->setMinimumHeight(intro->fontMetrics().height()*2+8);l->addWidget(intro);
+    auto*planScroll=new QScrollArea;planScroll->setObjectName("routinePlanScroll");planScroll->setWidgetResizable(true);planScroll->setFrameShape(QFrame::NoFrame);planScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);planScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);planScroll->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Expanding);
+    auto*planBody=new QWidget;planBody->setObjectName("routinePlanBody");auto*planLayout=new QVBoxLayout(planBody);planLayout->setContentsMargins(0,0,4,0);planLayout->setSpacing(7);planLayout->setSizeConstraint(QLayout::SetMinimumSize);
+    QVector<QPair<QLabel*,QLabel*>> planRows;auto addPlanRow=[&](const QString &number){auto*row=new QFrame;row->setMinimumHeight(routineMetrics.height()*3+22);row->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Minimum);row->setStyleSheet("QFrame{background:#fffefa;border:1px solid #dedbd1;border-radius:9px}");auto*rl=new QHBoxLayout(row);rl->setContentsMargins(13,8,13,8);auto*n=label(number);n->setStyleSheet("color:#ef775f;font-weight:800;border:0");n->setAlignment(Qt::AlignTop|Qt::AlignLeft);rl->addWidget(n);auto*copy=new QVBoxLayout;copy->setSpacing(3);auto*t=label("");t->setWordWrap(true);t->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Minimum);t->setStyleSheet("font-weight:800;border:0");auto*sub=label("");sub->setWordWrap(true);sub->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Minimum);sub->setStyleSheet("color:#71807c;border:0");copy->addWidget(t);copy->addWidget(sub);rl->addLayout(copy,1);planLayout->addWidget(row);planRows.append(qMakePair(t,sub));};for(const QString &number:{QStringLiteral("01"),QStringLiteral("02"),QStringLiteral("03"),QStringLiteral("04"),QStringLiteral("05"),QStringLiteral("06"),QStringLiteral("07")})addPlanRow(number);planScroll->setWidget(planBody);l->addWidget(planScroll,1);
+    auto*variation=label("");variation->setWordWrap(true);variation->setMinimumHeight(routineMetrics.height()*2+4);variation->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Minimum);variation->setStyleSheet("color:#71807c");
     l->addWidget(variation);
     auto*buttons=new QHBoxLayout;auto*shuffle=button("Change cadence pattern","routineDialogSecondary");auto*cancel=button("Not now","routineDialogSecondary");auto*start=button("Start the full plan  →","routineDialogPrimary");start->setDefault(true);const int actionHeight=routineMetrics.height()+22;for(auto*b:{shuffle,cancel,start}){b->setMinimumHeight(actionHeight);b->setMinimumWidth(110);b->setSizePolicy(QSizePolicy::Minimum,QSizePolicy::Fixed);}buttons->addWidget(shuffle);buttons->addStretch();buttons->addWidget(cancel);buttons->addWidget(start);l->addLayout(buttons);
     const QString secondaryStyle="QPushButton{color:#244d45;background:#fffefa;border:1px solid #aebdb8;border-radius:8px;padding:8px 13px;font-weight:700}QPushButton:hover{background:#eef7f4;border-color:#2d7d70}";
     for(auto*b:{previousDay,todayButton,nextDay,shuffle,cancel})b->setStyleSheet(secondaryStyle);start->setStyleSheet("QPushButton{color:white;background:#2d7d70;border:1px solid #205e54;border-radius:8px;padding:8px 16px;font-weight:800}QPushButton:hover{background:#235f56}");
-    const auto refresh=[&]{const auto theme=dailyRoutineTheme(viewedDate);const QString hands="Right hand → left hand → together";const QString cadence=cadencePatternName(viewedVariation);const QString degrees=theme.minor?"i–iv–V–i":"I–IV–V–I";head->setText(viewedDate.toString("ddd, MMM d, yyyy"));todayButton->setEnabled(viewedDate!=today);planRows[0].first->setText(theme.keyName+" scale + contrary motion · 3 min");planRows[0].second->setText(hands+" with conventional scale turns");planRows[1].first->setText(theme.keyName+" arpeggios · 3 min");planRows[1].second->setText(hands+" across the chord tones");planRows[2].first->setText(theme.keyName+" chord inversions · 3 min");planRows[2].second->setText(hands+" · root → first → second → octave");planRows[3].first->setText(theme.keyName+" cadence + broken chords · 4 min");planRows[3].second->setText(hands+" · "+degrees+" · "+cadence);planRows[4].first->setText(theme.keyName+" pedal changes · 3 min");planRows[4].second->setText(hands+" · exact Ped. and * timing");planRows[5].first->setText(earFocusName(theme.earFocus)+" · 3 min");planRows[5].second->setText("Right-hand range → left-hand range → both hands");const QString song=theme.useOde?"Ode to Joy":"Morning Light";planRows[6].first->setText(song+" in "+theme.keyName+" · 5 min");planRows[6].second->setText(hands);variation->setText(QString("Twenty-one guided steps · cadence: %1 (pattern %2 of 3)").arg(cadence).arg(viewedVariation+1));start->setText(viewedDate==today?"Start today's plan  →":"Start this plan  →");};
+    const auto refresh=[&]{const auto theme=dailyRoutineTheme(viewedDate);const QString hands="Right hand → left hand → together";const QString cadence=cadencePatternName(viewedVariation);const QString degrees=!theme.minor?"I–IV–V–I":theme.minorForm==0?"i–iv–v–i":"i–iv–V–i";head->setText(viewedDate.toString("ddd, MMM d, yyyy"));todayButton->setEnabled(viewedDate!=today);planRows[0].first->setText(theme.keyName+" scale + contrary motion · 3 min");planRows[0].second->setText(hands+" · "+scaleFormDetail(theme));planRows[1].first->setText(theme.keyName+" arpeggios · 3 min");planRows[1].second->setText(hands+" across the chord tones");planRows[2].first->setText(theme.keyName+" chord inversions · 3 min");planRows[2].second->setText(hands+" · root → first → second → octave");planRows[3].first->setText(theme.keyName+" cadence + broken chords · 4 min");planRows[3].second->setText(hands+" · "+degrees+" · "+cadence);planRows[4].first->setText(theme.keyName+" pedal changes · 3 min");planRows[4].second->setText(hands+" · exact Ped. and * timing");planRows[5].first->setText(dailyEarFocusName(theme.earFocus,theme.minor)+" · 3 min");planRows[5].second->setText("Right-hand range → left-hand range → both hands");const QString song=theme.useOde?"Ode to Joy":"Morning Light";planRows[6].first->setText(song+" in "+theme.keyName+" · 5 min");planRows[6].second->setText(hands);variation->setText(QString("Day %1 of 60 · twenty-one guided steps · cadence: %2 (pattern %3 of 3)").arg(theme.index+1).arg(cadence).arg(viewedVariation+1));start->setText(viewedDate==today?"Start today's plan  →":"Start this plan  →");};
     connect(previousDay,&QPushButton::clicked,&d,[&]{viewedDate=viewedDate.addDays(-1);viewedVariation=dailyRoutineTheme(viewedDate).chordOrder;refresh();});connect(nextDay,&QPushButton::clicked,&d,[&]{viewedDate=viewedDate.addDays(1);viewedVariation=dailyRoutineTheme(viewedDate).chordOrder;refresh();});connect(todayButton,&QPushButton::clicked,&d,[&]{viewedDate=today;viewedVariation=dailyRoutineTheme(viewedDate).chordOrder;refresh();});connect(shuffle,&QPushButton::clicked,&d,[&]{viewedVariation=(viewedVariation+1)%3;refresh();shuffle->setText("Changed to "+cadencePatternName(viewedVariation));QTimer::singleShot(1100,shuffle,[shuffle]{shuffle->setText("Change cadence pattern");});});
     connect(cancel,&QPushButton::clicked,&d,&QDialog::reject);connect(start,&QPushButton::clicked,&d,[&]{m_routinePlanDate=viewedDate;m_routineVariation=viewedVariation;m_routineCompletedSteps.clear();d.accept();loadRoutineStep(0);});refresh();d.exec();
 }
@@ -3383,12 +3391,12 @@ void MainWindow::openRoutineDialog(){
 void MainWindow::loadRoutineStep(int step){
     if(!m_routinePlanDate.isValid())m_routinePlanDate=QDate::currentDate();const auto theme=dailyRoutineTheme(m_routinePlanDate);
     const QString routineSongName=theme.useOde?"Ode to Joy":"Morning Light";
-    const QString cadenceDegrees=theme.minor?"i–iv–V–i":"I–IV–V–I";
+    const QString cadenceDegrees=!theme.minor?"I–IV–V–I":theme.minorForm==0?"i–iv–v–i":"i–iv–V–i";
     struct Stage{QString title,detail,type;int hand,tempo;};
     const QVector<Stage> stages{
-        {"Scale + contrary motion — right hand",theme.keyName+" · conventional turns","scale",1,72},
-        {"Scale + contrary motion — left hand",theme.keyName+" · conventional turns","scale",0,72},
-        {"Scale + contrary motion — together",theme.keyName+" · combine both hands","scale",-1,72},
+        {"Scale + contrary motion — right hand",theme.keyName+" · "+scaleFormDetail(theme),"scale",1,72},
+        {"Scale + contrary motion — left hand",theme.keyName+" · "+scaleFormDetail(theme),"scale",0,72},
+        {"Scale + contrary motion — together",theme.keyName+" · combine both hands", "scale",-1,72},
         {"Arpeggio — right hand",theme.keyName+" triad · up and down","arpeggio",1,68},
         {"Arpeggio — left hand",theme.keyName+" triad · up and down","arpeggio",0,68},
         {"Arpeggio — together",theme.keyName+" triad · combine both hands","arpeggio",-1,68},
@@ -3410,13 +3418,15 @@ void MainWindow::loadRoutineStep(int step){
     };
     step=qBound(0,step,stages.size()-1);const auto &stage=stages[step];m_routineStep=step;
     m_earTraining=false;m_synth.stopSequence();setMode(Mode::Wait);
-    if(stage.type=="scale")setSong("Daily "+theme.keyName+" scale + contrary motion",MusicDocument::scaleRoutine(theme.transpose,theme.minor),stage.tempo);
-    else if(stage.type=="arpeggio")setSong("Daily "+theme.keyName+" arpeggio",MusicDocument::arpeggioRoutine(theme.transpose,theme.minor),stage.tempo);
-    else if(stage.type=="inversions")setSong("Daily "+theme.keyName+" chord inversions",MusicDocument::inversionRoutine(theme.transpose,theme.minor),stage.tempo);
-    else if(stage.type=="cadence")setSong("Daily "+theme.keyName+" cadence",MusicDocument::cadenceRoutine(theme.transpose,m_routineVariation,theme.minor),stage.tempo);
-    else if(stage.type=="pedal")setSong("Daily "+theme.keyName+" pedal changes",MusicDocument::pedalChangeRoutine(theme.transpose,theme.minor),stage.tempo,MusicDocument::pedalChangeEvents());
+    const bool raisedMinorLeadingTone=theme.minor&&theme.minorForm!=0;
+    if(stage.type=="scale")setSong("Daily "+theme.keyName+" scale + contrary motion",MusicDocument::scaleRoutine(theme.transpose,theme.minor,theme.minorForm,theme.fifths),stage.tempo,{},theme.fifths,theme.keyName);
+    else if(stage.type=="arpeggio")setSong("Daily "+theme.keyName+" arpeggio",MusicDocument::arpeggioRoutine(theme.transpose,theme.minor,theme.fifths),stage.tempo,{},theme.fifths,theme.keyName);
+    else if(stage.type=="inversions")setSong("Daily "+theme.keyName+" chord inversions",MusicDocument::inversionRoutine(theme.transpose,theme.minor,theme.fifths),stage.tempo,{},theme.fifths,theme.keyName);
+    else if(stage.type=="cadence")setSong("Daily "+theme.keyName+" cadence",MusicDocument::cadenceRoutine(theme.transpose,m_routineVariation,theme.minor,raisedMinorLeadingTone,theme.fifths),stage.tempo,{},theme.fifths,theme.keyName);
+    else if(stage.type=="pedal")setSong("Daily "+theme.keyName+" pedal changes",MusicDocument::pedalChangeRoutine(theme.transpose,theme.minor,raisedMinorLeadingTone,theme.fifths),stage.tempo,MusicDocument::pedalChangeEvents(),theme.fifths,theme.keyName);
     else if(stage.type=="ear")setSong("Ear training — find the sound",{},stage.tempo);
-    else {const QString songName=theme.useOde?"Ode to Joy":"Morning Light";const auto song=theme.useOde?MusicDocument::odeToJoy():MusicDocument::morningLight();setSong(songName+" — "+theme.keyName,transposedMode(song,theme.transpose,theme.minor),stage.tempo);}
+    else {const QString songName=theme.useOde?"Ode to Joy":"Morning Light";const auto song=theme.useOde?MusicDocument::odeToJoy():MusicDocument::morningLight();setSong(songName+" — "+theme.keyName,transposedMode(song,theme.transpose,theme.minor,theme.fifths),stage.tempo,{},theme.fifths,theme.keyName);}
+    m_score->setLessonOpeningInset(stage.type!="ear");
     if(auto*b=m_handButtons->button(stage.hand<0?2:stage.hand))b->setChecked(true);setHandFilter(stage.hand);
     m_routineSession->show();m_routineStepLabel->setText(QString("DAILY PLAN · STEP %1 OF %2%3").arg(step+1).arg(stages.size()).arg(m_routineCompletedSteps.contains(step)?" · COMPLETE ✓":""));m_routineDetailLabel->setText(stage.title+"  ·  "+stage.detail);m_routinePreviousButton->setEnabled(step>0);m_routineNextButton->setText(step==stages.size()-1?"Finish plan  ✓":"Next step  →");
     if(stage.type=="ear"){m_earTraining=true;m_earTrainingRound=0;m_earTrainingSolved=0;m_attempts=m_correct=m_streak=m_bestStreak=0;updateStats();startEarTrainingRound();}
@@ -3425,7 +3435,7 @@ void MainWindow::loadRoutineStep(int step){
 }
 
 void MainWindow::finishRoutinePlan(){
-    if(m_routineStep<0)return;m_earTraining=false;m_synth.stopSequence();stopPlayback(true);m_routineStep=-1;m_routinePlanDate=QDate();m_routineSession->hide();if(auto*b=m_handButtons->button(2))b->setChecked(true);setHandFilter(-1);showNotice("Daily practice plan complete. You practiced scales, contrary motion, arpeggios, inversions, a cadence, broken chords, exact pedal changes, ear training, and repertoire with each hand and together.");toast("Practice plan complete");
+    if(m_routineStep<0)return;m_earTraining=false;m_synth.stopSequence();stopPlayback(true);m_routineStep=-1;m_routinePlanDate=QDate();m_routineSession->hide();m_score->setLessonOpeningInset(false);if(auto*b=m_handButtons->button(2))b->setChecked(true);setHandFilter(-1);showNotice("Daily practice plan complete. You practiced scales, contrary motion, arpeggios, inversions, a cadence, broken chords, exact pedal changes, ear training, and repertoire with each hand and together.");toast("Practice plan complete");
 }
 
 void MainWindow::playEarTrainingPrompt(){
@@ -3434,12 +3444,12 @@ void MainWindow::playEarTrainingPrompt(){
 
 void MainWindow::startEarTrainingRound(){
     if(!m_earTraining)return;++m_earTrainingRound;m_matched.clear();m_earExpected.clear();m_earPrompt.clear();
-    const int focus=dailyRoutineTheme(m_routinePlanDate.isValid()?m_routinePlanDate:QDate::currentDate()).earFocus;
+    const auto earTheme=dailyRoutineTheme(m_routinePlanDate.isValid()?m_routinePlanDate:QDate::currentDate());const int focus=earTheme.earFocus;
     const bool chord=focus==1||(focus==3&&m_earTrainingRound%3==0);const bool interval=focus==2;
     const bool together=m_handFilter<0;const int registerBase=m_handFilter==0?48:60;const int root=(chord||interval)?registerBase+QRandomGenerator::global()->bounded(6):registerBase+QRandomGenerator::global()->bounded(13);
     QVector<int> pitches;
-    if(together){const int bass=48+QRandomGenerator::global()->bounded(6);pitches<<bass;if(chord){const bool minor=QRandomGenerator::global()->bounded(2);pitches<<bass+12<<bass+12+(minor?3:4)<<bass+19;}else pitches<<bass+12+(interval?3+QRandomGenerator::global()->bounded(5):0);}
-    else{pitches<<root;if(chord){const bool minor=QRandomGenerator::global()->bounded(2);pitches<<root+(minor?3:4)<<root+7;}else if(interval)pitches<<root+3+QRandomGenerator::global()->bounded(5);}
+    if(together){const int bass=48+QRandomGenerator::global()->bounded(6);pitches<<bass;if(chord)pitches<<bass+12<<bass+12+(earTheme.minor?3:4)<<bass+19;else pitches<<bass+12+(interval?3+QRandomGenerator::global()->bounded(5):0);}
+    else{pitches<<root;if(chord)pitches<<root+(earTheme.minor?3:4)<<root+7;else if(interval)pitches<<root+3+QRandomGenerator::global()->bounded(5);}
     for(int pitch:pitches){m_earExpected.insert(pitch);const Hand promptHand=together?(pitch<60?Hand::Left:Hand::Right):(m_handFilter==0?Hand::Left:Hand::Right);m_earPrompt.append({pitch,0,1.15,promptHand==Hand::Left?78:92,promptHand});}
     m_score->setNotes({});m_score->setExpected({},0);m_score->setFollowBeat(0);m_score->setPlayedBeat(-1);m_bubble->setNotes({});m_bubble->setExpected({},0);m_bubble->setPlayhead(0);
     QStringList hidden;for(int index=0;index<pitches.size();++index)hidden<<"?";const qreal promptSize=qMax<qreal>(8.0,(QApplication::font().pointSizeF()>0?QApplication::font().pointSizeF():10.0)-6.0);const QString promptType=together?"both-hand sound":chord?"chord":interval?"interval":"note";const QString range=together?"across both hands":m_handFilter==0?"in the left-hand range":"in the right-hand range";m_nextNoteLabel->setStyleSheet(QString("font-size:%1pt;font-weight:700;color:#173f39").arg(promptSize,0,'f',1));m_nextNoteLabel->setText(hidden.join(" + "));m_coachLabel->setText(QString("Listen to the hidden %1-note sound %2.\nFind every note in any order.").arg(pitches.size()).arg(range));m_barLabel->setText(QString("EAR TRAINING   ·   Round %1 · Find the %2").arg(m_earTrainingRound).arg(promptType));

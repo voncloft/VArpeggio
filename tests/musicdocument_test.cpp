@@ -99,14 +99,89 @@ int main(int argc, char **argv) {
                 "daily cadence selections generate distinct rising and falling patterns");
     const auto pedalNotes=MusicDocument::pedalChangeRoutine();const auto pedalChanges=MusicDocument::pedalChangeEvents();
     ok &= check(pedalNotes.size()==24&&pedalChanges.size()==8&&pedalChanges.first().down&&!pedalChanges.last().down,"daily pedal lesson pairs four harmonies with exact press and release instructions");
-    const auto aMinorScale=MusicDocument::scaleRoutine(9,true);QSet<int> aMinorPitchClasses;for(const auto &note:aMinorScale)aMinorPitchClasses.insert((note.note%12+12)%12);
-    ok &= check(aMinorPitchClasses==QSet<int>({9,11,0,2,4,5,8}),"minor daily scale uses one complete harmonic-minor collection");
+    const auto dMinorScale=MusicDocument::scaleRoutine(2,true);QVector<int> dNatural,dHarmonic,dMelodicUp,dMelodicDown;AccidentalMark harmonicLeading=AccidentalMark::Automatic;
+    for(const auto &note:dMinorScale)if(note.hand==Hand::Right){
+        if(note.start<4.0)dNatural.append(note.note);
+        else if(note.start>=8.0&&note.start<12.0){dHarmonic.append(note.note);if(qAbs(note.start-11.0)<.01)harmonicLeading=note.accidental;}
+        else if(note.start>=16.0&&note.start<20.0)dMelodicUp.append(note.note);
+        else if(note.start>=20.0&&note.start<24.0)dMelodicDown.append(note.note);
+    }
+    ok &= check(dNatural==QVector<int>({62,64,65,67,69,70,72,74}),"D natural minor ascends with B-flat and C natural");
+    ok &= check(dHarmonic==QVector<int>({62,64,65,67,69,70,73,74})&&harmonicLeading==AccidentalMark::Sharp,"D harmonic minor keeps B-flat and writes C-sharp as the raised seventh");
+    ok &= check(dMelodicUp==QVector<int>({62,64,65,67,69,71,73,74}),"D melodic minor ascending raises both B and C");
+    ok &= check(dMelodicDown==QVector<int>({72,70,69,67,65,64,62}),"D melodic minor descends through C natural and B-flat");
+    ok &= check(dMinorScale.size()==90,"minor scale chapter contains natural, harmonic, and melodic forms for both hands");
+    const auto dNaturalOnly=MusicDocument::scaleRoutine(2,true,0,-1);const auto dHarmonicOnly=MusicDocument::scaleRoutine(2,true,1,-1);const auto dMelodicOnly=MusicDocument::scaleRoutine(2,true,2,-1);
+    ok &= check(dNaturalOnly.size()==30&&dHarmonicOnly.size()==30&&dMelodicOnly.size()==30,"daily natural, harmonic, and melodic minor lessons are three separate one-form chapters");
+    QVector<int> dHarmonicOnlyUp,dHarmonicOnlyDown,dHarmonicLeftOut,dHarmonicLeftReturn;AccidentalMark harmonicDownLeading=AccidentalMark::Automatic;
+    for(const auto &note:dHarmonicOnly){
+        if(note.hand==Hand::Right&&note.start<4.0)dHarmonicOnlyUp.append(note.note);
+        else if(note.hand==Hand::Right&&note.start>=4.0){dHarmonicOnlyDown.append(note.note);if(qAbs(note.start-4.0)<.01)harmonicDownLeading=note.accidental;}
+        else if(note.hand==Hand::Left&&note.start<4.0)dHarmonicLeftOut.append(note.note);
+        else if(note.hand==Hand::Left&&note.start>=4.0)dHarmonicLeftReturn.append(note.note);
+    }
+    ok &= check(dHarmonicOnlyUp==QVector<int>({62,64,65,67,69,70,73,74}),"standalone D harmonic minor ascends with C-sharp");
+    ok &= check(dHarmonicOnlyDown==QVector<int>({73,70,69,67,65,64,62})&&harmonicDownLeading==AccidentalMark::Sharp,"standalone D harmonic minor descends with C-sharp too");
+    ok &= check(dHarmonicLeftOut==QVector<int>({50,49,46,45,43,41,40,38})&&dHarmonicLeftReturn==QVector<int>({40,41,43,45,46,49,50}),"left-hand D harmonic minor keeps C-sharp in both directions");
+    const auto aSharpHarmonic=MusicDocument::scaleRoutine(10,true,1,7);const NoteEvent *aSharpLeading=nullptr;
+    for(const auto &note:aSharpHarmonic)if(note.hand==Hand::Right&&qAbs(note.start-3.0)<.01){aSharpLeading=&note;break;}
+    ok &= check(aSharpLeading&&aSharpLeading->writtenStep==4&&aSharpLeading->writtenAlter==2&&aSharpLeading->accidental==AccidentalMark::DoubleSharp&&MusicDocument::spelledNoteName(aSharpLeading->note,7,aSharpLeading->accidental,true,aSharpLeading->writtenStep,aSharpLeading->writtenAlter)==QString::fromUtf8("G𝄪5"),"A-sharp harmonic minor writes its leading tone as G-double-sharp");
+    const auto cFlatMajor=MusicDocument::scaleRoutine(11,false,-1,-7);const auto cFlatFirst=std::find_if(cFlatMajor.cbegin(),cFlatMajor.cend(),[](const auto &note){return note.hand==Hand::Right&&note.start<.01;});
+    ok &= check(cFlatFirst!=cFlatMajor.cend()&&cFlatFirst->writtenStep==0&&cFlatFirst->writtenAlter==-1&&MusicDocument::spelledNoteName(cFlatFirst->note,-7,cFlatFirst->accidental,true,cFlatFirst->writtenStep,cFlatFirst->writtenAlter)==QString::fromUtf8("C♭5"),"C-flat major remains a distinct written key instead of being renamed B major");
+    struct RotationKey{int majorTonic,minorTonic,fifths;};
+    const QVector<RotationKey> rotationKeys{
+        {0,9,0},{7,4,1},{5,2,-1},{2,11,2},{10,7,-2},
+        {9,6,3},{3,0,-3},{4,1,4},{8,5,-4},{11,8,5},
+        {1,10,-5},{6,3,6},{6,3,-6},{1,10,7},{11,8,-7}
+    };
+    const QVector<int> majorRight{0,2,4,5,7,9,11,12,11,9,7,5,4,2,0};
+    const QVector<int> naturalRight{0,2,3,5,7,8,10,12,10,8,7,5,3,2,0};
+    const QVector<int> harmonicRight{0,2,3,5,7,8,11,12,11,8,7,5,3,2,0};
+    const QVector<int> melodicRight{0,2,3,5,7,9,11,12,10,8,7,5,3,2,0};
+    const QVector<int> harmonicLeft{0,-1,-4,-5,-7,-9,-10,-12,-10,-9,-7,-5,-4,-1,0};
+    auto relativeLine=[](const QVector<NoteEvent>&notes,Hand hand,int base){QVector<int> result;for(const auto &note:notes)if(note.hand==hand)result.append(note.note-base);return result;};
+    auto degreeAt=[](const QVector<NoteEvent>&notes,double beat)->const NoteEvent*{for(const auto &note:notes)if(note.hand==Hand::Right&&qAbs(note.start-beat)<.01)return &note;return nullptr;};
+    bool completeRotationCorrect=true;
+    for(const auto &key:rotationKeys){
+        const auto major=MusicDocument::scaleRoutine(key.majorTonic,false,-1,key.fifths);
+        const auto natural=MusicDocument::scaleRoutine(key.minorTonic,true,0,key.fifths);
+        const auto harmonic=MusicDocument::scaleRoutine(key.minorTonic,true,1,key.fifths);
+        const auto melodic=MusicDocument::scaleRoutine(key.minorTonic,true,2,key.fifths);
+        completeRotationCorrect&=relativeLine(major,Hand::Right,60+key.majorTonic)==majorRight;
+        completeRotationCorrect&=relativeLine(natural,Hand::Right,60+key.minorTonic)==naturalRight;
+        completeRotationCorrect&=relativeLine(harmonic,Hand::Right,60+key.minorTonic)==harmonicRight;
+        completeRotationCorrect&=relativeLine(melodic,Hand::Right,60+key.minorTonic)==melodicRight;
+        completeRotationCorrect&=relativeLine(harmonic,Hand::Left,48+key.minorTonic)==harmonicLeft;
+        const auto *naturalSixth=degreeAt(natural,2.5),*naturalSeventh=degreeAt(natural,3.0);
+        const auto *harmonicSeventhUp=degreeAt(harmonic,3.0),*harmonicSeventhDown=degreeAt(harmonic,4.0);
+        const auto *melodicSixthUp=degreeAt(melodic,2.5),*melodicSeventhUp=degreeAt(melodic,3.0);
+        const auto *melodicSeventhDown=degreeAt(melodic,4.0),*melodicSixthDown=degreeAt(melodic,4.5);
+        completeRotationCorrect&=naturalSixth&&naturalSeventh&&harmonicSeventhUp&&harmonicSeventhDown&&melodicSixthUp&&melodicSeventhUp&&melodicSeventhDown&&melodicSixthDown;
+        if(naturalSixth&&naturalSeventh&&harmonicSeventhUp&&harmonicSeventhDown&&melodicSixthUp&&melodicSeventhUp&&melodicSeventhDown&&melodicSixthDown){
+            completeRotationCorrect&=harmonicSeventhUp->writtenStep==naturalSeventh->writtenStep&&harmonicSeventhUp->writtenAlter==naturalSeventh->writtenAlter+1;
+            completeRotationCorrect&=harmonicSeventhDown->writtenStep==naturalSeventh->writtenStep&&harmonicSeventhDown->writtenAlter==naturalSeventh->writtenAlter+1;
+            completeRotationCorrect&=melodicSixthUp->writtenStep==naturalSixth->writtenStep&&melodicSixthUp->writtenAlter==naturalSixth->writtenAlter+1;
+            completeRotationCorrect&=melodicSeventhUp->writtenStep==naturalSeventh->writtenStep&&melodicSeventhUp->writtenAlter==naturalSeventh->writtenAlter+1;
+            completeRotationCorrect&=melodicSeventhDown->writtenStep==naturalSeventh->writtenStep&&melodicSeventhDown->writtenAlter==naturalSeventh->writtenAlter;
+            completeRotationCorrect&=melodicSixthDown->writtenStep==naturalSixth->writtenStep&&melodicSixthDown->writtenAlter==naturalSixth->writtenAlter;
+        }
+    }
+    ok &= check(completeRotationCorrect,"all 60 scale days preserve the correct major and three distinct minor forms in both directions");
     const auto aMinorArpeggio=MusicDocument::arpeggioRoutine(9,true);QSet<int> aMinorArpeggioClasses;for(const auto &note:aMinorArpeggio)aMinorArpeggioClasses.insert((note.note%12+12)%12);
     ok &= check(aMinorArpeggioClasses==QSet<int>({9,0,4}),"minor daily arpeggio uses the minor third instead of silently reverting to major");
     const auto aMinorInversions=MusicDocument::inversionRoutine(9,true);QSet<int> aMinorInversionClasses;for(const auto &note:aMinorInversions)aMinorInversionClasses.insert((note.note%12+12)%12);
     ok &= check(aMinorInversionClasses==QSet<int>({9,0,4}),"minor daily inversions remain minor in every position");
     const auto aMinorCadence=MusicDocument::cadenceRoutine(9,0,true);QSet<int> aMinorCadenceClasses;for(const auto &note:aMinorCadence)aMinorCadenceClasses.insert((note.note%12+12)%12);
     ok &= check(aMinorCadenceClasses.contains(0)&&aMinorCadenceClasses.contains(8)&&aMinorCadenceClasses.contains(9),"minor daily cadence uses i-iv-V-i harmony");
+    const auto dMinorCadence=MusicDocument::cadenceRoutine(2,0,true);QVector<QSet<int>> dCadenceChords(4);
+    for(const auto &note:dMinorCadence)if(note.hand==Hand::Right)dCadenceChords[qBound(0,int(note.start/2),3)].insert((note.note%12+12)%12);
+    ok &= check(dCadenceChords[0]==QSet<int>({2,5,9})&&dCadenceChords[1]==QSet<int>({7,10,2})&&dCadenceChords[2]==QSet<int>({9,1,4})&&dCadenceChords[3]==QSet<int>({2,5,9}),"D-minor cadence is exactly i-iv-V-i with C-sharp only in the dominant");
+    const auto dMinorPedal=MusicDocument::pedalChangeRoutine(2,true);QVector<QSet<int>> dPedalChords(4);
+    for(const auto &note:dMinorPedal)if(note.hand==Hand::Right)dPedalChords[qBound(0,int(note.start/2),3)].insert((note.note%12+12)%12);
+    ok &= check(dPedalChords==dCadenceChords,"minor pedal chapter uses the same correct i-iv-V-i harmony as the cadence chapter");
+    const auto dMajorCadence=MusicDocument::cadenceRoutine(2,0,false);QVector<QSet<int>> dMajorChords(4);
+    for(const auto &note:dMajorCadence)if(note.hand==Hand::Right)dMajorChords[qBound(0,int(note.start/2),3)].insert((note.note%12+12)%12);
+    ok &= check(dMajorChords[0]==QSet<int>({2,6,9})&&dMajorChords[1]==QSet<int>({7,11,2})&&dMajorChords[2]==QSet<int>({9,1,4})&&dMajorChords[3]==QSet<int>({2,6,9}),"D-major cadence remains entirely major and does not borrow minor harmony");
 
     const auto morning=MusicDocument::morningLight();QVector<int> morningBassPitches,morningBassFingers;
     for(const auto &note:morning)if(note.hand==Hand::Left){morningBassPitches.append(note.note);morningBassFingers.append(note.finger);}
@@ -158,6 +233,10 @@ int main(int argc, char **argv) {
     loaded.clear(); tempo = 72;
     ok &= check(MusicDocument::importFile(xml, loaded, title, tempo, &error), "read MusicXML");
     ok &= check(loaded.size() == source.size(), "MusicXML preserves note count");
+    const QString theoreticalXml=temp.filePath("a-sharp-harmonic.musicxml");
+    ok &= check(MusicDocument::saveMusicXml(theoreticalXml,aSharpHarmonic,72,"A-sharp harmonic minor",&error),"write theoretical MusicXML spelling");
+    QFile theoreticalFile(theoreticalXml);theoreticalFile.open(QIODevice::ReadOnly);const QByteArray theoreticalBytes=theoreticalFile.readAll();
+    ok &= check(theoreticalBytes.contains("<step>G</step><alter>2</alter><octave>5</octave>"),"MusicXML export preserves G-double-sharp instead of renaming it A natural");
 
     QFile xmlSource(xml);xmlSource.open(QIODevice::ReadOnly);
     const QString mxl=temp.filePath("roundtrip.mxl");QFile mxlFile(mxl);mxlFile.open(QIODevice::WriteOnly);mxlFile.write(storedMxl(xmlSource.readAll()));mxlFile.close();
@@ -197,15 +276,16 @@ int main(int argc, char **argv) {
     ok &= check(MusicDocument::importFile(project, loaded, title, tempo, &error), "read VArpeggio project");
     ok &= check(loaded.size() == source.size() && title == "Chord drill" && tempo == 72, "project metadata round trip");
 
-    const QString annotatedProject=temp.filePath("annotated.varpeggio");QVector<NoteEvent> annotated=source;if(!annotated.isEmpty()){annotated[0].accidental=AccidentalMark::Natural;annotated[0].finger=3;}
+    const QString annotatedProject=temp.filePath("annotated.varpeggio");QVector<NoteEvent> annotated=source;if(!annotated.isEmpty()){annotated[0].accidental=AccidentalMark::Sharp;annotated[0].finger=3;annotated[0].writtenStep=6;annotated[0].writtenAlter=1;}
     ok &= check(MusicDocument::saveJson(annotatedProject,annotated,72,"Annotated",&error,{{0,3,4},{3,4,4}},{3},{{0,-1}},{{2,1,Hand::Left}},sourcePedals),"write editable notation metadata");
     QFile annotatedFile(annotatedProject);annotatedFile.open(QIODevice::ReadOnly);const QJsonObject annotatedJson=QJsonDocument::fromJson(annotatedFile.readAll()).object();
     ok &= check(annotatedJson.value("timeSignatures").toArray().size()==2&&annotatedJson.value("keySignatures").toArray().size()==1&&annotatedJson.value("repeatEnds").toArray().size()==1&&annotatedJson.value("rests").toArray().size()==1&&annotatedJson.value("pedalEvents").toArray().size()==2,"project preserves meter, key, repeat, rest, and pedal data");
-    ok &= check(annotatedJson.value("notes").toArray().first().toObject().value("accidental").toInt()==int(AccidentalMark::Natural),"project preserves note accidental");
+    ok &= check(annotatedJson.value("notes").toArray().first().toObject().value("accidental").toInt()==int(AccidentalMark::Sharp),"project preserves note accidental");
+    ok &= check(annotatedJson.value("notes").toArray().first().toObject().value("writtenStep").toInt()==6&&annotatedJson.value("notes").toArray().first().toObject().value("writtenAlter").toInt()==1,"project preserves exact enharmonic spelling");
     ok &= check(annotatedJson.value("notes").toArray().first().toObject().value("finger").toInt()==3,"project preserves lesson fingering");
     QVector<TimeSignatureEvent> loadedMeters;QVector<double> loadedRepeats;QVector<KeySignatureEvent> loadedKeys;QVector<StaffRestEvent> loadedRests;QVector<PedalEvent> loadedPedals;loaded.clear();
     ok &= check(MusicDocument::importFile(annotatedProject,loaded,title,tempo,&error,&loadedMeters,&loadedRepeats,&loadedKeys,&loadedRests,&loadedPedals),"reopen editable notation project");
-    ok &= check(loadedMeters.size()==2&&loadedKeys.size()==1&&loadedRepeats.size()==1&&loadedRests.size()==1&&loadedPedals.size()==2&&loadedPedals.first().down&&!loadedPedals.last().down&&loaded.first().accidental==AccidentalMark::Natural&&loaded.first().finger==3,"editable notation metadata round trip");
+    ok &= check(loadedMeters.size()==2&&loadedKeys.size()==1&&loadedRepeats.size()==1&&loadedRests.size()==1&&loadedPedals.size()==2&&loadedPedals.first().down&&!loadedPedals.last().down&&loaded.first().accidental==AccidentalMark::Sharp&&loaded.first().finger==3&&loaded.first().writtenStep==6&&loaded.first().writtenAlter==1,"editable notation metadata round trip");
 
     const QString pdfPath = temp.filePath("playable.pdf");
     QFile projectFile(project); projectFile.open(QIODevice::ReadOnly);

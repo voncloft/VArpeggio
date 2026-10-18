@@ -28,6 +28,7 @@ public:
     void setExpectedPedal(int state, double beat);
     void setShowNames(bool show);
     void setShowFingering(bool show);
+    void setLessonOpeningInset(bool enabled);
     void setHandFilter(int filter);
     void setDrillRange(double startBeat, double endBeat);
     void setDrillRanges(const QVector<QPair<double,double>> &ranges);
@@ -78,6 +79,7 @@ private:
     double m_followBeat = 0;
     bool m_showNames = false;
     bool m_showFingering = false;
+    bool m_lessonOpeningInset = false;
     bool m_liveWriting = false;
     bool m_editEnabled = false;
     bool m_seekEnabled = true;

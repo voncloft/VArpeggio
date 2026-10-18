@@ -25,10 +25,20 @@ static QIcon makeIcon() {
 
 int main(int argc,char*argv[]){
     QApplication app(argc,argv);app.setApplicationName("VArpeggio");app.setApplicationDisplayName("VArpeggio");app.setOrganizationName("Voncloft");app.setOrganizationDomain("voncloft.com");app.setDesktopFileName("com.voncloft.VArpeggio");app.setWindowIcon(makeIcon());
-    const QStringList args=app.arguments();const int shot=args.indexOf("--screenshot");const int chordDialogShot=args.indexOf("--chord-dialog-screenshot");const int routineDialogShot=args.indexOf("--routine-dialog-screenshot");const int helpManualShot=args.indexOf("--help-manual-screenshot");const int open=args.indexOf("--open");const int importVideo=args.indexOf("--import-video");
+    const QStringList args=app.arguments();const int shot=args.indexOf("--screenshot");const int chordDialogShot=args.indexOf("--chord-dialog-screenshot");const int routineDialogShot=args.indexOf("--routine-dialog-screenshot");const int dailyShot=args.indexOf("--daily-screenshot");const int helpManualShot=args.indexOf("--help-manual-screenshot");const int open=args.indexOf("--open");const int importVideo=args.indexOf("--import-video");
     const int testFontSize=args.indexOf("--test-font-size");if(testFontSize>=0&&testFontSize+1<args.size()){bool ok=false;const int points=args[testFontSize+1].toInt(&ok);if(ok){QFont font=app.font();font.setPointSize(qBound(8,points,32));app.setFont(font);}}
     int screenshotDelay=1200;const int screenshotDelayArg=args.indexOf("--screenshot-delay");if(screenshotDelayArg>=0&&screenshotDelayArg+1<args.size()){bool ok=false;const int requested=args[screenshotDelayArg+1].toInt(&ok);if(ok)screenshotDelay=qBound(50,requested,30000);}
-    const int transcribe=args.indexOf("--transcribe-falling");const int transcribeAudio=args.indexOf("--transcribe-audio");const int transcribePdf=args.indexOf("--transcribe-pdf");const int estimateTempo=args.indexOf("--estimate-tempo");const int renderWav=args.indexOf("--render-wav");const int renderVideo=args.indexOf("--render-video");const int renderDetector=args.indexOf("--render-detector");const int scoreShot=args.indexOf("--score-screenshot");
+    const int transcribe=args.indexOf("--transcribe-falling");const int transcribeAudio=args.indexOf("--transcribe-audio");const int transcribePdf=args.indexOf("--transcribe-pdf");const int estimateTempo=args.indexOf("--estimate-tempo");const int renderWav=args.indexOf("--render-wav");const int renderVideo=args.indexOf("--render-video");const int renderDetector=args.indexOf("--render-detector");const int scoreShot=args.indexOf("--score-screenshot");const int dMinorShot=args.indexOf("--d-minor-scale-screenshot");const int lessonScaleShot=args.indexOf("--lesson-scale-screenshot");
+    if(lessonScaleShot>=0&&lessonScaleShot+5<args.size()){
+        bool tonicOk=false,formOk=false,fifthsOk=false,beatOk=false;const int tonic=args[lessonScaleShot+2].toInt(&tonicOk),form=args[lessonScaleShot+3].toInt(&formOk),fifths=args[lessonScaleShot+4].toInt(&fifthsOk);const double beat=args[lessonScaleShot+5].toDouble(&beatOk);if(!tonicOk||!formOk||!fifthsOk||!beatOk)return 64;
+        int hand=1;if(lessonScaleShot+6<args.size()){bool handOk=false;const int requested=args[lessonScaleShot+6].toInt(&handOk);if(handOk)hand=qBound(-1,requested,1);}
+        ScoreWidget score;score.setNotes(MusicDocument::scaleRoutine(tonic,form>=0,form,fifths));score.setKeySignatures({{0,fifths}});score.setTimeSignatures({{0,4,4}});score.setShowNames(true);score.setShowFingering(true);score.setLessonOpeningInset(true);score.setHandFilter(hand);score.setFollowBeat(beat);score.resize(1100,440);
+        QImage image(1100,440,QImage::Format_ARGB32_Premultiplied);image.fill(Qt::transparent);QPainter painter(&image);score.paintScore(painter,QRectF(0,0,1100,440));painter.end();return image.save(args[lessonScaleShot+1])?0:3;
+    }
+    if(dMinorShot>=0&&dMinorShot+2<args.size()){
+        bool ok=false;const double beat=args[dMinorShot+2].toDouble(&ok);ScoreWidget score;score.setNotes(MusicDocument::scaleRoutine(2,true));score.setKeySignatures({{0,-1}});score.setTimeSignatures({{0,4,4}});score.setShowNames(true);score.setShowFingering(true);score.setHandFilter(1);score.setFollowBeat(ok?beat:0);score.resize(1100,440);
+        QImage image(1100,440,QImage::Format_ARGB32_Premultiplied);image.fill(Qt::transparent);QPainter painter(&image);score.paintScore(painter,QRectF(0,0,1100,440));painter.end();return image.save(args[dMinorShot+1])?0:3;
+    }
     if(scoreShot>=0&&scoreShot+2<args.size()){
         QVector<NoteEvent> notes;QVector<TimeSignatureEvent> meters;QVector<double> repeats;QVector<KeySignatureEvent> keys;QVector<StaffRestEvent> rests;QVector<PedalEvent> pedals;QString title,error;int tempo=96;
         if(!MusicDocument::importFile(args[scoreShot+1],notes,title,tempo,&error,&meters,&repeats,&keys,&rests,&pedals)){fprintf(stderr,"%s\n",error.toLocal8Bit().constData());return 2;}
@@ -130,7 +140,7 @@ int main(int argc,char*argv[]){
     if(helpManualShot>=0&&helpManualShot+1<args.size()){
         HelpManualDialog dialog;dialog.show();QTimer::singleShot(screenshotDelay,&dialog,[&dialog,&app,path=args[helpManualShot+1]]{dialog.grab().save(path);dialog.close();app.quit();});return app.exec();
     }
-    if(shot>=0||chordDialogShot>=0||routineDialogShot>=0)app.setQuitOnLastWindowClosed(false);
+    if(shot>=0||chordDialogShot>=0||routineDialogShot>=0||dailyShot>=0)app.setQuitOnLastWindowClosed(false);
     MainWindow window;if(open>=0&&open+1<args.size())window.openPath(args[open+1]);window.show();
     if(importVideo>=0&&importVideo+1<args.size()){int tempo=0;if(importVideo+2<args.size()&&!args[importVideo+2].startsWith("--")){bool ok=false;const int requested=args[importVideo+2].toInt(&ok);if(!ok){fprintf(stderr,"The optional BPM must be a number.\n");return 64;}tempo=qBound(30,requested,260);}if(!window.transcribeVideoPath(args[importVideo+1],tempo))return 5;}
     if(args.contains("--live-follow"))window.showLiveScore();
@@ -144,6 +154,12 @@ int main(int argc,char*argv[]){
         QTimer::singleShot(0,&window,[&window]{for(auto *control:window.findChildren<QPushButton*>())if(control->text().contains("practice plan",Qt::CaseInsensitive)||control->toolTip().contains("practice plan",Qt::CaseInsensitive)){control->click();break;}});
         if(args.contains("--cycle-cadence"))QTimer::singleShot(450,&window,[]{if(auto *dialog=QApplication::activeModalWidget())for(auto *control:dialog->findChildren<QPushButton*>())if(control->text()=="Change cadence pattern"){control->click();break;}});
         QTimer::singleShot(900,&window,[&app,path=args[routineDialogShot+1]]{if(auto *dialog=QApplication::activeModalWidget()){dialog->grab().save(path);dialog->close();}app.quit();});
+    }
+    if(dailyShot>=0&&dailyShot+1<args.size()){
+        QTimer::singleShot(0,&window,[&window]{for(auto *control:window.findChildren<QPushButton*>())if(control->text().contains("practice plan",Qt::CaseInsensitive)||control->toolTip().contains("practice plan",Qt::CaseInsensitive)){control->click();break;}});
+        QTimer::singleShot(450,&window,[]{if(auto *dialog=QApplication::activeModalWidget())for(auto *control:dialog->findChildren<QPushButton*>())if(control->text().startsWith("Start today's plan")){control->click();break;}});
+        const int dailyBeatArg=args.indexOf("--daily-beat");if(dailyBeatArg>=0&&dailyBeatArg+1<args.size()){bool ok=false;const double beat=args[dailyBeatArg+1].toDouble(&ok);if(ok)QTimer::singleShot(800,&window,[&window,beat]{if(auto *score=window.findChild<ScoreWidget*>())score->setFollowBeat(beat);});}
+        QTimer::singleShot(screenshotDelay,&window,[&window,&app,path=args[dailyShot+1]]{window.grab().save(path);app.quit();});
     }
     return app.exec();
 }

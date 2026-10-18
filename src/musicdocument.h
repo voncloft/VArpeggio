@@ -6,7 +6,7 @@
 #include <functional>
 
 enum class Hand { Left, Right };
-enum class AccidentalMark { Automatic, Natural, Sharp, Flat };
+enum class AccidentalMark { Automatic, Natural, Sharp, Flat, DoubleSharp, DoubleFlat };
 
 struct NoteEvent {
     int note = 60;
@@ -18,6 +18,12 @@ struct NoteEvent {
     // Suggested piano finger (thumb 1 through little finger 5). Zero means
     // that the source score does not provide a fingering recommendation.
     int finger = 0;
+    // Optional exact written spelling. Step is C=0 through B=6; alter is
+    // -2 through +2. MIDI still controls the sounding pitch. These fields let
+    // lessons write notes such as E-sharp, B-sharp, C-flat, and F-double-sharp
+    // instead of substituting an enharmonic note with a different scale role.
+    int writtenStep = -1;
+    int writtenAlter = 99;
 };
 
 struct TimeSignatureEvent {
@@ -77,20 +83,34 @@ public:
     // names (for example MIDI 56 is A-flat, not G-sharp, in E-flat major).
     static QString spelledNoteName(int midi, int fifths,
                                    AccidentalMark accidental = AccidentalMark::Automatic,
-                                   bool withOctave = true);
+                                   bool withOctave = true,
+                                   int writtenStep = -1,
+                                   int writtenAlter = 99);
     // Infer the conventional key signature that best explains the pitch
     // collection. Positive values are sharps, negative values are flats.
     static int inferKeySignature(const QVector<NoteEvent> &notes);
+    static void applyLessonSpelling(NoteEvent &note, int tonicSemitones,
+                                    bool minor, int scaleDegree,
+                                    int keyFifths = 99);
     // Release points for the on-screen physical keys. Tiny legato overlaps in
     // exported MIDI remain audible but do not leave an old hand position lit.
     static QVector<double> keyboardReleaseBeats(const QVector<NoteEvent> &notes);
     static QVector<NoteEvent> morningLight();
     static QVector<NoteEvent> odeToJoy();
-    static QVector<NoteEvent> scaleRoutine(int tonicSemitones = 0, bool minor = false);
-    static QVector<NoteEvent> arpeggioRoutine(int tonicSemitones = 0, bool minor = false);
-    static QVector<NoteEvent> inversionRoutine(int tonicSemitones = 0, bool minor = false);
-    static QVector<NoteEvent> cadenceRoutine(int tonicSemitones = 0, int variation = 0, bool minor = false);
-    static QVector<NoteEvent> pedalChangeRoutine(int tonicSemitones = 0, bool minor = false);
+    // minorForm: -1 teaches all three forms (legacy/general use), 0 natural,
+    // 1 harmonic, 2 classical melodic. Daily plans select exactly one form.
+    static QVector<NoteEvent> scaleRoutine(int tonicSemitones = 0, bool minor = false,
+                                           int minorForm = -1, int keyFifths = 99);
+    static QVector<NoteEvent> arpeggioRoutine(int tonicSemitones = 0, bool minor = false,
+                                              int keyFifths = 99);
+    static QVector<NoteEvent> inversionRoutine(int tonicSemitones = 0, bool minor = false,
+                                               int keyFifths = 99);
+    static QVector<NoteEvent> cadenceRoutine(int tonicSemitones = 0, int variation = 0,
+                                             bool minor = false, bool raisedMinorLeadingTone = true,
+                                             int keyFifths = 99);
+    static QVector<NoteEvent> pedalChangeRoutine(int tonicSemitones = 0, bool minor = false,
+                                                 bool raisedMinorLeadingTone = true,
+                                                 int keyFifths = 99);
     static QVector<PedalEvent> pedalChangeEvents();
     static QVector<NoteEvent> chordRoutine(int variation = 0);
 

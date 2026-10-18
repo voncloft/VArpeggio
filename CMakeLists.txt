@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(VArpeggio VERSION 0.2.45 LANGUAGES CXX)
+project(VArpeggio VERSION 0.2.46 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 

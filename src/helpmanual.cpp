@@ -15,7 +15,7 @@
 #include <QVBoxLayout>
 
 #ifndef VARPEGGIO_VERSION
-#define VARPEGGIO_VERSION "0.2.45"
+#define VARPEGGIO_VERSION "0.2.46"
 #endif
 
 namespace {
@@ -102,7 +102,7 @@ QVector<ManualSection> manualSections(){
        page("Daily Practice Plan",R"HTML(
 <p>Open <b>Practice → Daily practice plan</b> or the sidebar card. Choose a date, optionally change the cadence pattern, then start the plan. The pattern button immediately cycles among block chords, rising broken chords, and falling broken chords; the selected name appears in the plan before you start.</p>
 <h2>Seven chapters, twenty-one guided steps</h2><p>Every chapter is taught in the same physical order: <b>right hand → left hand → together</b>.</p><ol><li>Scale and contrary motion</li><li>Arpeggios</li><li>Chord inversions: root, first, second, and octave positions</li><li>I–IV–V–I cadence with the selected block or broken-chord pattern</li><li>Pedal changes as their own chapter, with exact <b>Ped.</b> and <b>*</b> timing</li><li>Ear training: right-hand range, left-hand range, then a sound split across both hands</li><li>Repertoire</li></ol>
-<h2>Major and minor days stay separate</h2><p>A plan date is either entirely major or entirely minor. On a minor day, all 21 steps use the minor scale, minor arpeggio and inversions, minor-key cadence and pedal harmony, and minor-mode repertoire. Nothing switches back to major halfway through the session.</p>
+<h2>Sixty separate written-key days</h2><p>The workbook cycles through fifteen conventional written major keys. Every related minor key has three additional, separate dates: <b>natural minor</b>, <b>harmonic minor</b>, and <b>classical melodic minor</b>. That makes 60 complete day-plans. A D natural minor day contains only the natural scale; D harmonic minor and D melodic minor are their own days. Enharmonic spellings such as F-sharp and G-flat are retained as distinct written lessons, including advanced spellings such as E-sharp, B-sharp, and double sharps.</p><p>Every date still has all 21 steps. Major days use major material; natural-minor days use the natural scale and an <b>i–iv–v–i</b> cadence; harmonic and melodic days use their raised leading tone and <b>i–iv–V–i</b>. The displayed key signature belongs to that exact written key.</p>
 <p>The session strip above the score has Previous, Next step, Finish plan, and Close plan controls. The plan changes key, mode, fingering, cadence pattern, ear focus, and repertoire by date. Score steps use Wait mode and support focused measure drills and the wrong-note measure restart. All three pedal-change steps enforce each highlighted <b>Ped.</b> and <b>*</b>.</p>
 )HTML")},
       {"Chord Practice","chords roots fifth triad seventh ninth inversion block broken",

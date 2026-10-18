@@ -37,6 +37,7 @@ class Group:
     duration: int
     pitches: tuple[int, ...]
     accidentals: tuple[int, ...]
+    spellings: tuple[tuple[int, int], ...]
     staff: int
     voice: int = 1
 
@@ -51,6 +52,7 @@ class Item:
     duration: int
     pitches: tuple[int, ...]
     accidentals: tuple[int, ...]
+    spellings: tuple[tuple[int, int], ...]
     rest: bool
     visible: bool = True
     tie_start: bool = False
@@ -70,17 +72,18 @@ def split_value(duration: int) -> list[int]:
 def allocate_voices(source: list[dict]) -> dict[int, list[list[Group]]]:
     result: dict[int, list[list[Group]]] = {}
     for staff in (1, 2):
-        grouped: dict[tuple[int, int], list[tuple[int, int]]] = defaultdict(list)
+        grouped: dict[tuple[int, int], list[tuple[int, int, int, int]]] = defaultdict(list)
         for note in source:
             note_staff = 2 if note.get("hand") == "left" else 1
             if note_staff != staff:
                 continue
             start = max(0, round(float(note["start"]) * DIVISIONS))
             duration = max(1, round(float(note["duration"]) * DIVISIONS))
-            grouped[(start, duration)].append((int(note["note"]), int(note.get("accidental", 0))))
+            grouped[(start, duration)].append((int(note["note"]), int(note.get("accidental", 0)), int(note.get("writtenStep", -1)), int(note.get("writtenAlter", 99))))
         groups = [
-            Group(start, duration, tuple(pitch for pitch, _ in sorted(set(pitches))),
-                  tuple(accidental for _, accidental in sorted(set(pitches))), staff)
+            Group(start, duration, tuple(pitch for pitch, _, _, _ in sorted(set(pitches))),
+                  tuple(accidental for _, accidental, _, _ in sorted(set(pitches))),
+                  tuple((step, alter) for _, _, step, alter in sorted(set(pitches))), staff)
             for (start, duration), pitches in grouped.items()
         ]
         groups.sort(key=lambda group: (group.start, -group.duration, group.pitches))
@@ -137,7 +140,7 @@ def fragments(groups: list[Group], measure_start: int, measure_end: int, visible
         pieces = split_value(clipped_end - clipped_start)
         for index, duration in enumerate(pieces):
             notes.append(Item(
-                cursor, duration, group.pitches, group.accidentals, False,
+                cursor, duration, group.pitches, group.accidentals, group.spellings, False,
                 tie_start=(group.end > measure_end or index < len(pieces) - 1),
                 tie_stop=(group.start < measure_start or index > 0),
             ))
@@ -149,14 +152,14 @@ def fragments(groups: list[Group], measure_start: int, measure_end: int, visible
         if note.start > cursor:
             rest_cursor = cursor
             for duration in split_value(note.start - cursor):
-                timeline.append(Item(rest_cursor, duration, (), (), True, visible_rests))
+                timeline.append(Item(rest_cursor, duration, (), (), (), True, visible_rests))
                 rest_cursor += duration
         timeline.append(note)
         cursor = max(cursor, note.start + note.duration)
     measure_duration = measure_end - measure_start
     if cursor < measure_duration:
         for duration in split_value(measure_duration - cursor):
-            timeline.append(Item(cursor, duration, (), (), True, visible_rests))
+            timeline.append(Item(cursor, duration, (), (), (), True, visible_rests))
             cursor += duration
     return add_beams(timeline)
 
@@ -172,7 +175,15 @@ def duration_notation(duration: int) -> tuple[str, int, bool]:
     }[duration]
 
 
-def pitch_xml(midi: int, accidental_mark: int = 0, fifths: int = 0) -> str:
+def pitch_xml(midi: int, accidental_mark: int = 0, fifths: int = 0,
+              written_step: int = -1, written_alter: int = 99) -> str:
+    if 0 <= written_step <= 6 and -2 <= written_alter <= 2:
+        natural = (0, 2, 4, 5, 7, 9, 11)
+        step = "CDEFGAB"[written_step]
+        alter = written_alter
+        octave = math.floor((midi - natural[written_step] - alter) / 12) - 1
+        accidental = f"<alter>{alter}</alter>" if alter else ""
+        return f"<pitch><step>{step}</step>{accidental}<octave>{octave}</octave></pitch>"
     spelling = PITCH_CLASS_SHARP if accidental_mark == 2 or (accidental_mark != 3 and fifths > 0) else PITCH_CLASS_FLAT
     step, alter = spelling[midi % 12]
     accidental = f"<alter>{alter}</alter>" if alter else ""
@@ -188,11 +199,12 @@ def note_xml(item: Item, staff: int, voice: int, fifths: int = 0) -> str:
         if pitch_index:
             pieces.append("<chord/>")
         accidental_mark = item.accidentals[pitch_index] if pitch_index < len(item.accidentals) else 0
+        written_step, written_alter = item.spellings[pitch_index] if pitch_index < len(item.spellings) else (-1, 99)
         if not accidental_mark and pitch is not None:
             natural_order = (5, 0, 7, 2, 9, 4, 11) if fifths > 0 else (11, 4, 9, 2, 7, 0, 5)
             if int(pitch) % 12 in natural_order[:abs(fifths)]:
                 accidental_mark = 1
-        pieces.append("<rest/>" if item.rest else pitch_xml(int(pitch), accidental_mark, fifths))
+        pieces.append("<rest/>" if item.rest else pitch_xml(int(pitch), accidental_mark, fifths, written_step, written_alter))
         pieces += [f"<duration>{item.duration}</duration>", f"<voice>{voice}</voice>", f"<type>{note_type}</type>"]
         pieces += ["<dot/>"] * dots
         if triplet:
@@ -204,7 +216,7 @@ def note_xml(item: Item, staff: int, voice: int, fifths: int = 0) -> str:
         pieces.append(f"<staff>{staff}</staff>")
         if not item.rest:
             if accidental_mark:
-                pieces.append(f"<accidental>{ {1: 'natural', 2: 'sharp', 3: 'flat'}.get(accidental_mark, 'natural') }</accidental>")
+                pieces.append(f"<accidental>{ {1: 'natural', 2: 'sharp', 3: 'flat', 4: 'double-sharp', 5: 'flat-flat'}.get(accidental_mark, 'natural') }</accidental>")
             # A chord shares one stem/beam. Repeating beam elements on every
             # secondary <chord/> note makes Verovio treat the chord as a broken
             # beam sequence and can corrupt the following rests.
