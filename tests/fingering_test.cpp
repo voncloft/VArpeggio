@@ -250,6 +250,32 @@ int main(int argc,char **argv){
     ok&=check(meterDrill.measureNumberAt(4.25)==2&&meterDrill.measureNumberAt(6.0)==3,
               "measure drill numbers bars correctly across a meter change");
 
+    ScoreWidget anchoredDrill;
+    anchoredDrill.resize(1100,440);
+    anchoredDrill.setNotes(MusicDocument::morningLight());
+    anchoredDrill.setTimeSignatures({{0.0,4,4}});
+    anchoredDrill.setFollowBeat(4.0);
+    ok&=check(qAbs(anchoredDrill.viewStartBeat()-4.0)<.001,
+              "score normally pages to the followed measure");
+    anchoredDrill.holdViewStart(0.0);
+    anchoredDrill.setDrillRanges({{4.0,8.0}});
+    ok&=check(qAbs(anchoredDrill.viewStartBeat())<.001,
+              "selecting a drill measure keeps the visible grand staff anchored");
+    anchoredDrill.setDrillRanges({});
+    ok&=check(qAbs(anchoredDrill.viewStartBeat())<.001,
+              "deselecting a drill measure keeps the visible grand staff anchored");
+    anchoredDrill.setFollowBeat(4.0);
+    ok&=check(qAbs(anchoredDrill.viewStartBeat())<.001,
+              "changing the expected note within the visible page does not repage the staff");
+    anchoredDrill.setDrillRanges({{0.0,4.0},{4.0,8.0}});
+    anchoredDrill.setDrillRanges({{4.0,8.0}});
+    anchoredDrill.setFollowBeat(4.0);
+    ok&=check(qAbs(anchoredDrill.viewStartBeat())<.001,
+              "deselecting measure 1 while measure 2 remains selected still displays measures 1 onward");
+    anchoredDrill.setFollowBeat(8.0);
+    ok&=check(qAbs(anchoredDrill.viewStartBeat()-8.0)<.001,
+              "normal score following resumes after practice leaves the anchored page");
+
     // An optional visual artifact exercises the default 61-key physical range
     // within the full 88-key renderer. Outer keys remain visible but inactive;
     // the centre chord verifies synchronized fingering badges.

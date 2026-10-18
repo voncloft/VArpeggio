@@ -412,10 +412,20 @@ QVector<NoteEvent> withSuggestedFingering(QVector<NoteEvent> notes){
 }
 
 ScoreWidget::ScoreWidget(QWidget *parent):QWidget(parent){setMinimumHeight(190);setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Expanding);}
-void ScoreWidget::setNotes(const QVector<NoteEvent>&n){m_notes=withSuggestedFingering(n);updateGeometry();update();emit frameHeightHintChanged(recommendedFrameHeight());}
+void ScoreWidget::setNotes(const QVector<NoteEvent>&n){m_viewStartOverride=-1;m_notes=withSuggestedFingering(n);updateGeometry();update();emit frameHeightHintChanged(recommendedFrameHeight());}
 void ScoreWidget::setExpected(const QSet<int>&n,double start){m_expected=n;m_groupStart=start;update();}
 void ScoreWidget::setPlayedBeat(double b){m_playedBeat=b;update();}
-void ScoreWidget::setFollowBeat(double b){m_followBeat=qMax(0.0,b);update();}
+void ScoreWidget::setFollowBeat(double b){
+    const double next=qMax(0.0,b);
+    if(m_viewStartOverride>=0){
+        const auto visible=viewRange();
+        // Drill selection changes the expected note, but an expected note
+        // already on the displayed page must not become a new left edge.
+        // Release the anchor only when following genuinely leaves the page.
+        if(next<visible.first-.001||next>=visible.first+visible.second-.001)m_viewStartOverride=-1;
+    }
+    m_followBeat=next;update();
+}
 void ScoreWidget::setLiveWritingMode(bool live){m_liveWriting=live;update();}
 void ScoreWidget::setEditEnabled(bool enabled){m_editEnabled=enabled;if(!enabled)m_editCursorBeat=-1;setCursor(enabled?Qt::CrossCursor:Qt::ArrowCursor);update();}
 void ScoreWidget::setSeekEnabled(bool enabled){m_seekEnabled=enabled;m_seekDragging=false;m_seekPreviewBeat=-1;if(!m_editEnabled)setCursor(enabled?Qt::SizeHorCursor:Qt::ArrowCursor);update();}
@@ -443,6 +453,8 @@ void ScoreWidget::setDrillRanges(const QVector<QPair<double,double>>&ranges){
 QPair<double,double> ScoreWidget::measureRangeAt(double beat)const{return measureAt(m_timeSignatures,qMax(0.0,beat));}
 double ScoreWidget::measureEndAt(double beat)const{const auto measure=measureRangeAt(beat);return measure.first+measure.second;}
 int ScoreWidget::measureNumberAt(double beat)const{return measureOrdinalAt(m_timeSignatures,qMax(0.0,beat));}
+double ScoreWidget::viewStartBeat()const{return viewRange().first;}
+void ScoreWidget::holdViewStart(double beat){m_viewStartOverride=qMax(0.0,beat);update();}
 void ScoreWidget::paintEvent(QPaintEvent*){QPainter p(this);paintScore(p,rect());}
 
 QPair<double,double> ScoreWidget::viewRange() const {
@@ -455,7 +467,8 @@ QPair<double,double> ScoreWidget::viewRange() const {
         // Page by whole measures: the current bar owns the left slot and the
         // next bar is the preview on the right. Crossing a barline replaces
         // the left slot instead of continuously sliding beneath the clefs.
-        const auto measure=measureAt(m_timeSignatures,followed);startBeat=measure.first;
+        const double pageBeat=m_viewStartOverride>=0?m_viewStartOverride:followed;
+        const auto measure=measureAt(m_timeSignatures,pageBeat);startBeat=measure.first;
         // Fill a wide score with additional complete measures while retaining
         // enough horizontal room for notes, labels, and fingering. Resizing or
         // maximizing changes the number of visible measures, not the clef or

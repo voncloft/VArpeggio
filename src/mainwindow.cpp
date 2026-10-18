@@ -400,7 +400,7 @@ MainWindow::MainWindow(QWidget *parent):QMainWindow(parent),m_synth(this),m_midi
     auto*root=new QWidget;auto*rootLayout=new QVBoxLayout(root);rootLayout->setContentsMargins(0,0,0,0);rootLayout->setSpacing(0);rootLayout->addWidget(buildHeader());auto*body=new QWidget;auto*bodyLayout=new QHBoxLayout(body);bodyLayout->setContentsMargins(0,0,0,0);bodyLayout->setSpacing(0);bodyLayout->addWidget(buildSidebar());bodyLayout->addWidget(buildWorkspace(),1);rootLayout->addWidget(body,1);setCentralWidget(root);
     buildMenus();applyStyle();connectUi();m_score->setShowNames(m_noteNames->isChecked());m_score->setShowFingering(m_fingerNumbers->isChecked());setSong("Morning Light",MusicDocument::morningLight(),96);setMode(Mode::Wait);
     QSettings windowSettings("Voncloft","VArpeggio");const QByteArray savedGeometry=windowSettings.value("ui/mainWindowGeometry").toByteArray();if(!savedGeometry.isEmpty())restoreGeometry(savedGeometry);const QByteArray savedWindowState=windowSettings.value("ui/mainWindowState").toByteArray();if(!savedWindowState.isEmpty())restoreState(savedWindowState);if(windowSettings.value("ui/mainWindowMaximized",false).toBool())setWindowState(windowState()|Qt::WindowMaximized);
-    m_frameTimer.setInterval(25);connect(&m_frameTimer,&QTimer::timeout,this,&MainWindow::updateClocks);m_frameTimer.start();m_metroClock.start();m_waitAdvanceClock.start();if(!noAudio)m_midi.start();statusBar()->hide();
+    m_frameTimer.setInterval(25);connect(&m_frameTimer,&QTimer::timeout,this,&MainWindow::updateClocks);m_frameTimer.start();m_metroClock.start();m_waitAdvanceClock.start();if(!noAudio)m_midi.start();statusBar()->showMessage("Ready");statusBar()->show();
 }
 MainWindow::~MainWindow(){if(m_sourcePlayer)m_sourcePlayer->stop();m_midi.stop();m_midi.wait(1000);}
 void MainWindow::openPath(const QString &path){openScore(path);}
@@ -1528,8 +1528,11 @@ void MainWindow::connectUi() {
     seekPlayback(beat);
   });
   connect(m_score, &ScoreWidget::measureDrillCancelRequested, this, [this] {
-    if (m_mode == Mode::Wait && !m_earTraining && drillActive())
+    if (m_mode == Mode::Wait && !m_earTraining && drillActive()) {
+      const double preservedView=m_score->viewStartBeat();
       clearMeasureDrill();
+      m_score->holdViewStart(preservedView);
+    }
   });
   connect(m_drillButton, &QPushButton::clicked, this,
           [this] { clearMeasureDrill(); });
@@ -2136,12 +2139,13 @@ QPair<double,double> MainWindow::drillRangeForBeat(double beat)const{
     for(const auto &range:m_drillMeasures)if(beat>=range.first-.001&&beat<range.second-.001)return range;return {-1,-1};
 }
 void MainWindow::toggleMeasureDrill(double startBeat,double endBeat,int measureNumber){
+    const double preservedView=m_score?m_score->viewStartBeat():0.0;
     if(m_drillMeasures.contains(measureNumber))m_drillMeasures.remove(measureNumber);else m_drillMeasures.insert(measureNumber,{startBeat,endBeat});
-    if(m_drillMeasures.isEmpty()){clearMeasureDrill();return;}
+    if(m_drillMeasures.isEmpty()){clearMeasureDrill();if(m_score)m_score->holdViewStart(preservedView);return;}
     m_drillMeasure=m_drillMeasures.firstKey();m_drillLastMeasure=m_drillMeasures.lastKey();m_drillStart=m_drillMeasures.first().first;m_drillEnd=m_drillMeasures.last().second;
     m_drillPass=1;m_drillPassMistakes=0;m_cleanRetryRequired=false;m_chordAttemptPending=false;m_pedalReleaseRequired=false;m_wrongHeldNotes.clear();m_drillButton->show();
     m_score->setDrillRanges(m_drillMeasures.values().toVector());
-    rebuildPractice();updatePrimaryButton();
+    rebuildPractice();if(m_score)m_score->holdViewStart(preservedView);updatePrimaryButton();
     if(drillGroupIndexes().isEmpty()){toast(drillMeasureLabel()+" selected — there are no attacks for the selected hand");return;}
     toast("Drill time — "+drillMeasureLabel()+" selected · click toggles each measure · double-click clears all");
 }
@@ -3456,7 +3460,7 @@ void MainWindow::startEarTrainingRound(){
     updateStats();updatePrimaryButton();playEarTrainingPrompt();
 }
 void MainWindow::showNotice(const QString&text,bool warning){m_noticeText->setText(text);m_notice->setProperty("warning",warning);m_notice->show();}
-void MainWindow::toast(const QString&text){statusBar()->show();statusBar()->showMessage(text,3500);QTimer::singleShot(3600,statusBar(),&QStatusBar::hide);}
+void MainWindow::toast(const QString&text){statusBar()->show();statusBar()->showMessage(text);}
 
 void MainWindow::keyPressEvent(QKeyEvent*e){if(e->isAutoRepeat()){e->accept();return;}if(m_keyMap.contains(e->key())&&!qobject_cast<QLineEdit*>(focusWidget())){userNoteOn(m_keyMap[e->key()],100);e->accept();return;}if(e->key()==Qt::Key_Space&&!qobject_cast<QLineEdit*>(focusWidget())){togglePlayback();e->accept();return;}if(e->key()==Qt::Key_R&&!qobject_cast<QLineEdit*>(focusWidget())){toggleRecord();e->accept();return;}if(e->key()==Qt::Key_Escape){stopPlayback(false);if(m_recording)finishRecording();if(m_mode==Mode::Free&&m_freePlayEditBeat>=0)finishFreePlayEditing();m_synth.allOff();e->accept();return;}QMainWindow::keyPressEvent(e);}
 void MainWindow::keyReleaseEvent(QKeyEvent*e){if(e->isAutoRepeat()){e->accept();return;}if(m_keyMap.contains(e->key())){userNoteOff(m_keyMap[e->key()]);e->accept();return;}QMainWindow::keyReleaseEvent(e);}

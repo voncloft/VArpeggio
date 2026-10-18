@@ -35,6 +35,8 @@ public:
     QPair<double,double> measureRangeAt(double beat) const;
     double measureEndAt(double beat) const;
     int measureNumberAt(double beat) const;
+    double viewStartBeat() const;
+    void holdViewStart(double beat);
     void paintScore(QPainter &p, const QRectF &target) const;
     int recommendedFrameHeight() const;
     const QVector<NoteEvent> &notes() const { return m_notes; }
@@ -77,6 +79,7 @@ private:
     double m_groupStart = 0;
     double m_playedBeat = -1;
     double m_followBeat = 0;
+    double m_viewStartOverride = -1;
     bool m_showNames = false;
     bool m_showFingering = false;
     bool m_lessonOpeningInset = false;
