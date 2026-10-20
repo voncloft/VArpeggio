@@ -1,4 +1,7 @@
 #include "synthesizer.h"
+#ifdef VARPEGGIO_HAVE_PULSEAUDIO
+#include "pulseaudiooutput.h"
+#endif
 
 #include <QAudioDevice>
 #include <QCoreApplication>
@@ -6,6 +9,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QMediaDevices>
+#include <QMetaObject>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QtMath>
@@ -141,7 +145,11 @@ SynthStream::SynthStream(QObject *parent) : QIODevice(parent) {
     const bool samplesDisabled=qEnvironmentVariableIsSet("VARPEGGIO_DISABLE_PIANO_SAMPLES")
                                ||qEnvironmentVariableIsSet("VARPEGGIO_DISABLE_SOUNDFONT");
     if(!samplesDisabled)m_recordedPiano=loadRecordedPiano();
-    open(QIODevice::ReadOnly);
+    // QIODevice's default 16 KiB read-ahead retained older sound/silence across
+    // transport resets, and counted frames which the sink had not requested.
+    // A live audio generator has no seekable backing file or read-ahead cache:
+    // each read must render exactly the frames delivered to QAudioSink.
+    open(QIODevice::ReadOnly|QIODevice::Unbuffered);
 }
 
 SynthStream::~SynthStream()=default;
@@ -233,18 +241,51 @@ quint64 SynthStream::noteOn(int midi, int velocity) {
 void SynthStream::noteOff(int midi) { QMutexLocker lock(&m_mutex);if(m_recordedPiano)for(auto &voice:m_recordedVoices)if(voice.note==midi)voice.releasing=true;for(auto &v:m_voices) if(!v.click&&v.note==midi)v.releasing=true; }
 void SynthStream::noteOffVoice(quint64 voiceId) { QMutexLocker lock(&m_mutex);if(m_recordedPiano)stopRecordedVoice(voiceId);for(auto &v:m_voices)if(v.id==voiceId){v.releasing=true;break;} }
 void SynthStream::click(bool accent) { QMutexLocker lock(&m_mutex);const int note=accent?102:96;const double frequency=440.0*qPow(2.0,(note-69)/12.0);const double step=2*M_PI*frequency/m_sampleRate;m_voices.append({note,m_nextVoiceId++,0,0,0,0,step,step*2,step*3,step*4,1.0,1.0,1.0,accent?.42:.28,true,true,false,accent?.9978:.9968,SynthInstrument::AcousticGrand}); }
-void SynthStream::allOff() { QMutexLocker lock(&m_mutex);stopRecordedVoices(false);for(auto &v:m_voices)v.releasing=true; }
+void SynthStream::allOff() { QMutexLocker lock(&m_mutex);stopRecordedVoices(false);for(auto &v:m_voices)v.releasing=true;m_referenceActive=false;m_referenceAudio.reset(); }
 void SynthStream::setMuted(bool muted) { QMutexLocker lock(&m_mutex); m_muted=muted; }
 void SynthStream::setVolume(double volume) { m_volumeTarget.store(qBound(0.0,volume,1.5),std::memory_order_relaxed); }
 void SynthStream::setInstrument(SynthInstrument instrument) { QMutexLocker lock(&m_mutex);if(instrument!=m_instrument)stopRecordedVoices(false);m_instrument=instrument; }
-void SynthStream::setOutputSampleRate(int sampleRate) { QMutexLocker lock(&m_mutex);if(m_voices.isEmpty()&&m_recordedVoices.isEmpty()&&!m_sequenceActive)m_sampleRate=qBound(22050,sampleRate,192000); }
+void SynthStream::setOutputSampleRate(int sampleRate) { QMutexLocker lock(&m_mutex);if(m_voices.isEmpty()&&m_recordedVoices.isEmpty()&&!m_sequenceActive&&!m_referenceActive)m_sampleRate=qBound(22050,sampleRate,192000); }
 void SynthStream::prepareAudioRecovery() { QMutexLocker lock(&m_mutex);m_muteGain=0.0;m_lastOutputLeft=0.0;m_lastOutputRight=0.0; }
 
-void SynthStream::startSequence(const QVector<NoteEvent> &notes,int tempo,double startBeat) {
+void SynthStream::clearTimelineAudio() {
+    m_sequenceActive=false;m_sequence.clear();m_sequenceIndex=0;
+    m_referenceActive=false;m_referenceAudio.reset();m_referencePosition=0.0;m_referenceStep=1.0;
+    m_referenceStartupFrames=0;m_referenceStartupLeft=0.0;m_referenceStartupRight=0.0;
+    // A transport jump is a hard boundary. Releasing an old sequenced voice is
+    // appropriate during ordinary note-off, but carrying that release into a
+    // restarted score makes stale notes audible before the restarted cursor.
+    m_recordedVoices.erase(std::remove_if(m_recordedVoices.begin(),m_recordedVoices.end(),[](const RecordedVoice &voice){return voice.sequenced;}),m_recordedVoices.end());
+    m_voices.erase(std::remove_if(m_voices.begin(),m_voices.end(),[](const Voice &voice){return voice.sequenced||voice.click;}),m_voices.end());
+    m_pianoRoom.fill(0.0f);m_pianoRoomIndex=0;m_toneLowLeft=m_toneLowRight=m_bassLowLeft=m_bassLowRight=m_airLowLeft=m_airLowRight=0.0;
+}
+
+void SynthStream::beginTimeline(qint64 preRollFrames) {
+    clearTimelineAudio();
+    const qint64 primeFrames=qMax<qint64>(0,preRollFrames);
+    m_sequenceFrame=-primeFrames;
+    // The first frame generated after this point is sequence time zero. The
+    // sink may already contain a sizeable block of older silence; recording
+    // the absolute frame here lets the visible playhead wait for that queued
+    // audio instead of racing ahead on an unrelated wall clock.
+    m_sequenceOriginFrame.store(m_totalRenderedFrames.load(std::memory_order_relaxed)+primeFrames,std::memory_order_relaxed);
+    m_sequenceSerial.fetch_add(1,std::memory_order_relaxed);
+}
+
+void SynthStream::scheduleMetronome(int tempo,double startBeat,double endBeat) {
+    if(!std::isfinite(startBeat)||!std::isfinite(endBeat)||endBeat<startBeat)return;
+    const double framesPerBeat=m_sampleRate*60.0/qMax(1,tempo);
+    const int firstBeat=qCeil(startBeat-.000001),lastBeat=qFloor(endBeat+.000001);
+    for(int beat=firstBeat;beat<=lastBeat;++beat){
+        const qint64 frame=qMax<qint64>(0,qRound64((beat-startBeat)*framesPerBeat));
+        const bool accent=beat%4==0;
+        m_sequence.append({frame,true,accent?102:96,accent?1:0,m_nextVoiceId++,true});
+    }
+}
+
+void SynthStream::startSequence(const QVector<NoteEvent> &notes,int tempo,double startBeat,bool metronome,qint64 preRollFrames) {
     QMutexLocker lock(&m_mutex);
-    stopRecordedVoices(true);
-    for(auto &voice:m_voices)if(voice.sequenced)voice.releasing=true;
-    m_sequence.clear();m_sequenceIndex=0;m_sequenceFrame=0;
+    beginTimeline(preRollFrames);
     const double framesPerBeat=m_sampleRate*60.0/qMax(1,tempo);
     const qint64 pedalTailFrames=qRound64(sequencePedalTail(m_instrument)*m_sampleRate);
     for(const auto &note:notes){
@@ -253,18 +294,57 @@ void SynthStream::startSequence(const QVector<NoteEvent> &notes,int tempo,double
         const double audibleStart=qMax(note.start,startBeat);
         const qint64 start=qMax<qint64>(0,qRound64((audibleStart-startBeat)*framesPerBeat));
         const qint64 end=qMax(start+1,qRound64((note.start+note.duration-startBeat)*framesPerBeat)+pedalTailFrames);
-        m_sequence.append({start,true,note.note,note.velocity,id});
-        m_sequence.append({end,false,note.note,0,id});
+        m_sequence.append({start,true,note.note,note.velocity,id,false});
+        m_sequence.append({end,false,note.note,0,id,false});
+    }
+    m_sequenceMetronomeEnabled=metronome;
+    if(!notes.isEmpty()){
+        double endBeat=startBeat;for(const auto &note:notes)if(note.start+note.duration>startBeat)endBeat=qMax(endBeat,note.start+note.duration);
+        scheduleMetronome(tempo,startBeat,endBeat);
     }
     std::sort(m_sequence.begin(),m_sequence.end(),[](const ScheduledEvent &a,const ScheduledEvent &b){return a.frame==b.frame?a.noteOn<b.noteOn:a.frame<b.frame;});
     m_sequenceActive=!m_sequence.isEmpty();
 }
 
+void SynthStream::startReference(ReferenceAudioPtr audio,int tempo,double startSeconds,
+                                 double rate,bool metronome,double scoreStartSeconds,
+                                 qint64 preRollFrames) {
+    QMutexLocker lock(&m_mutex);
+    beginTimeline(preRollFrames);
+    m_sequenceMetronomeEnabled=metronome;
+    if(!audio||audio->sampleRate<=0||audio->frameCount<=0||!audio->samples)return;
+
+    const double duration=double(audio->frameCount)/audio->sampleRate;
+    const double playbackRate=std::isfinite(rate)&&rate>0.0?rate:1.0;
+    const double sourceStart=qBound(0.0,std::isfinite(startSeconds)?startSeconds:0.0,duration);
+    const double scoreOrigin=qBound(0.0,std::isfinite(scoreStartSeconds)?scoreStartSeconds:0.0,duration);
+    m_referenceAudio=std::move(audio);
+    m_referencePosition=sourceStart*m_referenceAudio->sampleRate;
+    m_referenceStep=playbackRate*m_referenceAudio->sampleRate/double(m_sampleRate);
+    if(!std::isfinite(m_referenceStep)||m_referenceStep<=0.0)
+        m_referenceStep=m_referenceAudio->sampleRate/double(m_sampleRate);
+    m_referenceActive=m_referencePosition<m_referenceAudio->frameCount;
+    m_referenceStartupFrames=m_referenceActive?64:0;
+
+    if(m_referenceActive){
+        // Source seconds advance `rate` times faster than output seconds.  The
+        // score origin removes a video's non-musical intro, so beat zero and
+        // the first metronome pulse stay tied to the same decoded PCM frame.
+        const double sourceStartBeat=(sourceStart-scoreOrigin)*qMax(1,tempo)/playbackRate/60.0;
+        const double sourceEndBeat=(duration-scoreOrigin)*qMax(1,tempo)/playbackRate/60.0;
+        scheduleMetronome(tempo,sourceStartBeat,sourceEndBeat);
+        std::sort(m_sequence.begin(),m_sequence.end(),[](const ScheduledEvent &a,const ScheduledEvent &b){return a.frame==b.frame?a.noteOn<b.noteOn:a.frame<b.frame;});
+        m_sequenceActive=!m_sequence.isEmpty();
+    }
+}
+
 void SynthStream::stopSequence() {
     QMutexLocker lock(&m_mutex);
-    m_sequenceActive=false;m_sequence.clear();m_sequenceIndex=0;
-    stopRecordedVoices(true);
-    for(auto &voice:m_voices)if(voice.sequenced)voice.releasing=true;
+    clearTimelineAudio();
+}
+
+void SynthStream::setSequenceMetronomeEnabled(bool enabled) {
+    QMutexLocker lock(&m_mutex);m_sequenceMetronomeEnabled=enabled;
 }
 
 qint64 SynthStream::readData(char *data, qint64 maxlen) {
@@ -279,6 +359,14 @@ qint64 SynthStream::readData(char *data, qint64 maxlen) {
       const int chunkEnd=qMin(frames,chunkStart+chunkFrames);
       QMutexLocker lock(&m_mutex);
       auto processEvent=[&](const ScheduledEvent &event){
+          if(event.metronome){
+              if(!m_sequenceMetronomeEnabled)return;
+              const double frequency=440.0*qPow(2.0,(event.note-69)/12.0);
+              const double step=2*M_PI*frequency/m_sampleRate;
+              const bool accent=event.velocity!=0;
+              m_voices.append({event.note,event.voiceId,0,0,0,0,step,step*2,step*3,step*4,1.0,1.0,1.0,accent?.42:.28,true,true,true,accent?.9978:.9968,SynthInstrument::AcousticGrand});
+              return;
+          }
           if(m_recordedPiano){
               if(event.noteOn)startRecordedVoice(event.voiceId,event.note,event.velocity,true);
               else stopRecordedVoice(event.voiceId);
@@ -293,9 +381,32 @@ qint64 SynthStream::readData(char *data, qint64 maxlen) {
       };
 
       for(int i=chunkStart;i<chunkEnd;++i){double melodyLeft=0,melodyRight=0,clickSample=0,voiceLoad=0;
+        double referenceLeft=0.0,referenceRight=0.0;
         while(m_sequenceActive&&m_sequenceIndex<m_sequence.size()&&m_sequence[m_sequenceIndex].frame<=m_sequenceFrame){
             processEvent(m_sequence[m_sequenceIndex++]);
             if(m_sequenceIndex>=m_sequence.size())m_sequenceActive=false;
+        }
+        if(m_referenceActive&&m_referenceAudio&&m_sequenceFrame>=0){
+            const qint64 frame=qBound<qint64>(0,qint64(m_referencePosition),m_referenceAudio->frameCount-1);
+            const qint64 next=qMin(frame+1,m_referenceAudio->frameCount-1);
+            const double fraction=m_referencePosition-frame;
+            referenceLeft=m_referenceAudio->samples[frame*2]
+                          +(m_referenceAudio->samples[next*2]-m_referenceAudio->samples[frame*2])*fraction;
+            referenceRight=m_referenceAudio->samples[frame*2+1]
+                           +(m_referenceAudio->samples[next*2+1]-m_referenceAudio->samples[frame*2+1])*fraction;
+            if(m_referenceStartupFrames>0){
+                // A seek can land at any waveform phase. Bound only this new
+                // transport edge so arbitrary nonzero PCM cannot jump straight
+                // out of the preceding priming silence; ordinary attacks whose
+                // sample deltas are already small pass through bit-for-bit.
+                m_referenceStartupLeft+=qBound(-.075,referenceLeft-m_referenceStartupLeft,.075);
+                m_referenceStartupRight+=qBound(-.075,referenceRight-m_referenceStartupRight,.075);
+                referenceLeft=m_referenceStartupLeft;referenceRight=m_referenceStartupRight;
+                --m_referenceStartupFrames;
+            }
+            m_referencePosition+=m_referenceStep;
+            if(!std::isfinite(m_referencePosition)||m_referencePosition>=m_referenceAudio->frameCount)
+                m_referenceActive=false;
         }
         if(m_recordedPiano){
                 constexpr double attackSeconds=.004;
@@ -388,36 +499,232 @@ qint64 SynthStream::readData(char *data, qint64 maxlen) {
         deClick(soften(drivenRight),m_lastOutputRight);
         const double muteTarget=m_muted?0.0:1.0;
         m_muteGain+=qBound(-.0025,muteTarget-m_muteGain,.0025);
-        out[i*2]=float(m_lastOutputLeft*m_muteGain*.92);out[i*2+1]=float(m_lastOutputRight*m_muteGain*.92);
+        // The decoded original recording is already mastered stereo PCM. Mix
+        // it only after the piano-specific EQ, polyphony gain and peak shaper;
+        // otherwise a silent synth voice would still recolor the recording.
+        // It intentionally shares the same user volume and mute ramps.
+        // Match QAudioOutput's previous 0..1 reference-volume range rather
+        // than amplifying a mastered recording with the piano's 150% boost.
+        const double referenceGain=qMin(1.0,m_volumeGain)*m_muteGain;
+        out[i*2]=float(m_lastOutputLeft*m_muteGain*.92+referenceLeft*referenceGain);
+        out[i*2+1]=float(m_lastOutputRight*m_muteGain*.92+referenceRight*referenceGain);
         ++m_sequenceFrame;
       }
       // Compact once per short chunk: cheap enough for audio and it prevents a
       // long tail of dead voices from making later chunks progressively slower.
       m_voices.erase(std::remove_if(m_voices.begin(),m_voices.end(),[](const Voice&v){return v.releasing&&v.level*v.naturalGain<.0008;}),m_voices.end());
       m_recordedVoices.erase(std::remove_if(m_recordedVoices.begin(),m_recordedVoices.end(),[](const RecordedVoice &voice){return voice.releaseGain<=0.0;}),m_recordedVoices.end());
+      m_totalRenderedFrames.fetch_add(chunkEnd-chunkStart,std::memory_order_relaxed);
     }
     return qint64(frames)*frameBytes;
 }
 
-Synthesizer::Synthesizer(QObject *parent) : QObject(parent), m_stream(this) {
+Synthesizer::Synthesizer(QObject *parent) : QObject(parent) {
     if (qEnvironmentVariableIsSet("VARPEGGIO_NO_AUDIO")) return;
     QAudioDevice device=QMediaDevices::defaultAudioOutput();QAudioFormat format;format.setSampleRate(device.preferredFormat().sampleRate());format.setChannelCount(2);format.setSampleFormat(QAudioFormat::Float);
     if(!device.isFormatSupported(format)){format.setSampleRate(48000);if(!device.isFormatSupported(format))return;}
-    m_stream.setOutputSampleRate(format.sampleRate());
-    m_sink=std::make_unique<QAudioSink>(device,format,this);
-    // Keep enough audio ready for dense sampled-piano jumps. The previous
-    // 64 KiB request removed constant crackle but could still underrun during
-    // an occasional desktop scheduling stall. 96 KiB adds roughly 85 ms of
-    // safety at 48 kHz without changing the sample data or mixer tone. The
-    // mixer still works in short 512-frame chunks, so UI controls never wait
-    // behind the complete sink buffer.
-    m_sink->setBufferSize(98304);m_sink->start(&m_stream);
-    connect(m_sink.get(),&QAudioSink::stateChanged,this,[this](QAudio::State state){
-        if(!m_sink||m_recoveringAudio||state!=QAudio::IdleState||m_sink->error()!=QAudio::UnderrunError)return;
-        // A scheduler hiccup should create one short gap, not a stream that
-        // keeps crackling. Reset and refill the existing stream immediately.
-        m_recoveringAudio=true;m_stream.prepareAudioRecovery();m_sink->reset();m_sink->setBufferSize(98304);m_sink->start(&m_stream);m_recoveringAudio=false;
+    m_outputSampleRate=format.sampleRate();m_stream.setOutputSampleRate(m_outputSampleRate);
+    startOutputThread();
+    onOutputThread([this,device,format]{
+#ifdef VARPEGGIO_HAVE_PULSEAUDIO
+        // QAudioSink's Pulse backend smooths recent sink latencies. That can
+        // leave its position tens of milliseconds behind real output after
+        // a latency change. The native backend queries a fresh public Pulse
+        // presentation clock and independently refills the same sample data.
+        m_pulse=new PulseAudioOutput(m_stream,m_outputSampleRate,98304,device.id());
+        m_sinkFrameBase=m_stream.renderedFrameCount();
+        if(m_pulse->available()&&m_pulse->start()){m_available=true;return;}
+        delete m_pulse;m_pulse=nullptr;
+#endif
+        m_sink=std::make_unique<QAudioSink>(device,format,m_outputContext);
+        // Preserve the established headroom, format, sample data and tone.
+        // Only ownership of the backend refill event loop has changed.
+        m_sink->setBufferSize(98304);
+        m_sinkFrameBase=m_stream.renderedFrameCount();
+        connect(m_sink.get(),&QAudioSink::stateChanged,m_outputContext,[this](QAudio::State state){
+            if(!m_sink||m_recoveringAudio||state!=QAudio::IdleState
+                ||m_sink->error()!=QAudio::UnderrunError)return;
+            // A continuous source never reaches EOF. Let the backend refill
+            // and resume its existing stream; readyRead also wakes a backend
+            // which stopped pulling while idle. Resetting here discarded
+            // rendered-but-unpresented samples and moved the clock origin.
+            // This callback and the refill timer now share the output thread,
+            // so neither has to wait for the GUI to paint a score.
+            // Leave the backend's state-change callback before waking it;
+            // this is one queued wake, not a retry loop or a transport reset.
+            QMetaObject::invokeMethod(m_outputContext,[this]{
+                if(m_sink&&!m_recoveringAudio&&m_sink->state()==QAudio::IdleState
+                    &&m_sink->error()==QAudio::UnderrunError)emit m_stream.readyRead();
+            },Qt::QueuedConnection);
+        });
+        m_sink->start(&m_stream);
+        m_available=true;
     });
+}
+
+void Synthesizer::startOutputThread() {
+    Q_ASSERT(QThread::currentThread()==thread());
+    if(m_outputContext)return;
+    m_outputThread.setObjectName(QStringLiteral("VArpeggio audio output"));
+    m_outputContext=new QObject;
+    m_outputContext->moveToThread(&m_outputThread);
+    m_stream.moveToThread(&m_outputThread);
+    connect(&m_outputThread,&QThread::finished,m_outputContext,&QObject::deleteLater);
+    m_outputThread.start();
+}
+
+void Synthesizer::onOutputThread(const std::function<void()> &work) const {
+    if(!m_outputContext||QThread::currentThread()==&m_outputThread){work();return;}
+    // No GUI event pumping: completion is a single owning-thread operation.
+    // In particular, clock/state getters may not inspect QAudioSink directly
+    // from the GUI while the backend updates it on its own event loop.
+    QMetaObject::invokeMethod(m_outputContext,work,Qt::BlockingQueuedConnection);
+}
+
+Synthesizer::~Synthesizer() {
+    if(!m_outputContext)return;
+    Q_ASSERT(QThread::currentThread()==thread());
+    QThread *ownerThread=thread();
+    onOutputThread([this,ownerThread]{
+        m_recoveringAudio=true;
+#ifdef VARPEGGIO_HAVE_PULSEAUDIO
+        // Its destructor stops the native callback thread before the source
+        // can return to the GUI or release a mapped reference recording.
+        delete m_pulse;m_pulse=nullptr;
+#endif
+        if(m_sink){
+            disconnect(m_sink.get(),nullptr,m_outputContext,nullptr);
+            m_sink->reset();
+            m_sink.reset();
+        }
+        // The sink is gone, so no read can outlive its samples. Return the
+        // member QIODevice before its ordinary C++ destruction on the owning
+        // thread. Its reference-audio ownership remains intact until then.
+        m_stream.moveToThread(ownerThread);
+    });
+    m_outputThread.quit();
+    m_outputThread.wait();
+    m_outputContext=nullptr;
+}
+
+void Synthesizer::restartSink() {
+    Q_ASSERT(!m_outputContext||QThread::currentThread()==&m_outputThread);
+#ifdef VARPEGGIO_HAVE_PULSEAUDIO
+    if(m_pulse){
+        m_sinkFrameBase=m_stream.renderedFrameCount();
+        m_pulse->start();return;
+    }
+#endif
+    if(!m_sink)return;
+    m_sink->setBufferSize(98304);
+    m_sinkFrameBase=m_stream.renderedFrameCount();
+    m_sink->start(&m_stream);
+}
+
+void Synthesizer::startSequence(const QVector<NoteEvent> &notes,int tempo,double startBeat,bool metronome) {
+    onOutputThread([this,&notes,tempo,startBeat,metronome]{
+    if(!m_sink&&!m_pulse){m_stream.startSequence(notes,tempo,startBeat,metronome);return;}
+    // reset() discards audio which Qt has rendered but the device has not yet
+    // presented. Without this flush, Pause/Resume and tempo changes could play
+    // as much as one old device buffer while every visual was already waiting
+    // at the new score position.
+    m_recoveringAudio=true;
+#ifdef VARPEGGIO_HAVE_PULSEAUDIO
+    if(m_pulse)m_pulse->reset();else
+#endif
+    m_sink->reset();
+    m_stream.prepareAudioRecovery();
+    // Prime one device buffer with silence. Starting a note in the first frame
+    // of a newly created Pulse stream exposed its attack to startup rewinds and
+    // the backend's still-settling latency estimate. Sequence time zero remains
+    // the first musical frame, so every visual waits for exactly this same
+    // output position; later notes are never shifted relative to one another.
+    qsizetype bufferBytes=0;
+#ifdef VARPEGGIO_HAVE_PULSEAUDIO
+    if(m_pulse)bufferBytes=m_pulse->bufferSize();else
+#endif
+    bufferBytes=m_sink->bufferSize();
+    const qint64 primeFrames=qMax<qint64>(1,bufferBytes/(2*qint64(sizeof(float))));
+    m_stream.startSequence(notes,tempo,startBeat,metronome,primeFrames);
+    restartSink();
+    m_recoveringAudio=false;
+    });
+}
+
+void Synthesizer::startReference(ReferenceAudioPtr audio,int tempo,double startSeconds,
+                                 double rate,bool metronome,double scoreStartSeconds) {
+    onOutputThread([this,&audio,tempo,startSeconds,rate,metronome,scoreStartSeconds]{
+    if(!m_sink&&!m_pulse){m_stream.startReference(std::move(audio),tempo,startSeconds,rate,metronome,scoreStartSeconds);return;}
+    // Use the identical output-boundary reset and silent device priming as
+    // generated score playback. Decoded PCM and the visible score can then
+    // share one authoritative consumed-sample clock.
+    m_recoveringAudio=true;
+#ifdef VARPEGGIO_HAVE_PULSEAUDIO
+    if(m_pulse)m_pulse->reset();else
+#endif
+    m_sink->reset();
+    m_stream.prepareAudioRecovery();
+    qsizetype bufferBytes=0;
+#ifdef VARPEGGIO_HAVE_PULSEAUDIO
+    if(m_pulse)bufferBytes=m_pulse->bufferSize();else
+#endif
+    bufferBytes=m_sink->bufferSize();
+    const qint64 primeFrames=qMax<qint64>(1,bufferBytes/(2*qint64(sizeof(float))));
+    m_stream.startReference(std::move(audio),tempo,startSeconds,rate,metronome,scoreStartSeconds,primeFrames);
+    restartSink();
+    m_recoveringAudio=false;
+    });
+}
+
+void Synthesizer::stopSequence() {
+    onOutputThread([this]{
+    if(!m_sink&&!m_pulse){m_stream.stopSequence();return;}
+    // Stop means stop at the output boundary too, not merely stop generating
+    // additional samples behind audio which is already queued.
+    m_recoveringAudio=true;
+#ifdef VARPEGGIO_HAVE_PULSEAUDIO
+    if(m_pulse)m_pulse->reset();else
+#endif
+    m_sink->reset();
+    m_stream.stopSequence();
+    m_stream.prepareAudioRecovery();
+    restartSink();
+    m_recoveringAudio=false;
+    });
+}
+
+std::optional<double> Synthesizer::sequencePlaybackSeconds() const {
+    std::optional<double> seconds;
+    onOutputThread([this,&seconds]{
+    if(m_stream.sequenceSerial()==0||m_stream.sequenceOriginFrame()<0||m_outputSampleRate<=0)return;
+#ifdef VARPEGGIO_HAVE_PULSEAUDIO
+    if(m_pulse){
+        if(const auto processed=m_pulse->processedFrames())
+            seconds=double(m_sinkFrameBase+*processed-m_stream.sequenceOriginFrame())/m_outputSampleRate;
+        return;
+    }
+#endif
+    if(!m_sink||m_sink->state()==QAudio::StoppedState)return;
+    // processedUSecs() is the sink's consumed-output clock. renderedFrameCount
+    // is deliberately not used here: it runs ahead whenever Qt fills its
+    // buffer and was the source of the visible early-note regression.
+    const qint64 processedFrames=qRound64(m_sink->processedUSecs()*double(m_outputSampleRate)/1000000.0);
+    const qint64 audibleFrame=m_sinkFrameBase+processedFrames;
+    seconds=double(audibleFrame-m_stream.sequenceOriginFrame())/m_outputSampleRate;
+    });
+    return seconds;
+}
+
+bool Synthesizer::outputFailed() const {
+    bool failed=false;
+    onOutputThread([this,&failed]{
+#ifdef VARPEGGIO_HAVE_PULSEAUDIO
+        if(m_pulse){failed=m_pulse->failed();return;}
+#endif
+        failed=m_sink&&m_sink->state()==QAudio::StoppedState
+            &&m_sink->error()!=QAudio::NoError;
+    });
+    return failed;
 }
 
 bool Synthesizer::saveWav(const QString &path,const QVector<NoteEvent> &notes,int tempo,QString *error,SynthInstrument instrument){

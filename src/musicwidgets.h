@@ -15,6 +15,8 @@ public:
     void setNotes(const QVector<NoteEvent> &notes);
     void setExpected(const QSet<int> &notes, double groupStart);
     void setPlayedBeat(double beat);
+    void setPlaybackCursorVisible(bool visible);
+    void setPlaybackWaiting(double beat);
     void setFollowBeat(double beat);
     void setLiveWritingMode(bool live);
     void setEditEnabled(bool enabled);
@@ -36,6 +38,7 @@ public:
     double measureEndAt(double beat) const;
     int measureNumberAt(double beat) const;
     double viewStartBeat() const;
+    double viewWindowBeats() const;
     void holdViewStart(double beat);
     void paintScore(QPainter &p, const QRectF &target) const;
     int recommendedFrameHeight() const;
@@ -78,6 +81,8 @@ private:
     QSet<int> m_expected;
     double m_groupStart = 0;
     double m_playedBeat = -1;
+    bool m_playbackCursorVisible = true;
+    double m_playbackWaitingBeat = -1.0;
     double m_followBeat = 0;
     double m_viewStartOverride = -1;
     bool m_showNames = false;
@@ -132,6 +137,7 @@ public:
     void setPlayhead(double beat);
     void setExpected(const QSet<int> &notes, double groupStart);
     void setBubblesVisible(bool visible);
+    void setTimelineVisible(bool visible);
     void setWaitMode(bool waiting);
     void setHandFilter(int filter);
     void pulseNote(int note);
@@ -147,6 +153,7 @@ private:
     QSet<int> m_expected;
     double m_playhead = 0, m_groupStart = 0;
     bool m_showBubbles = true;
+    bool m_timelineVisible = true;
     bool m_waitMode = true;
     int m_handFilter = -1;
     QElapsedTimer m_clock;

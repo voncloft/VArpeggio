@@ -44,6 +44,7 @@ SOFTWARE.
 - **OpenCV** — Apache License 2.0. Source: <https://github.com/opencv/opencv>
 - **libsndfile** — LGPL 2.1. Source: <https://github.com/libsndfile/libsndfile>
 - **ALSA library** — LGPL 2.1 or later. Source: <https://github.com/alsa-project/alsa-lib>
+- **libpulse** — optional Linux audio-output client library, LGPL 2.1 or later. VArpeggio links the system library; it is not bundled. Source: <https://gitlab.freedesktop.org/pulseaudio/pulseaudio>
 - **zlib** — zlib license. Source: <https://github.com/madler/zlib>
 
 ## Separately executed system tools

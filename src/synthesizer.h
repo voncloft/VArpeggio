@@ -1,15 +1,19 @@
 #pragma once
 
 #include "musicdocument.h"
+#include "referenceaudio.h"
 
 #include <QAudioSink>
 #include <QIODevice>
 #include <QHash>
 #include <QMutex>
+#include <QThread>
 #include <QVector>
 #include <array>
 #include <atomic>
+#include <functional>
 #include <memory>
+#include <optional>
 
 enum class SynthInstrument {
     AcousticGrand = 0,
@@ -18,17 +22,27 @@ enum class SynthInstrument {
 };
 
 struct RecordedPianoLibrary;
+class PulseAudioOutput;
 
 class SynthStream : public QIODevice {
     Q_OBJECT
 public:
     explicit SynthStream(QObject *parent = nullptr);
     ~SynthStream() override;
+    bool isSequential() const override { return true; }
+    // This device is a continuous generator, including silence between
+    // scores. An empty QIODevice read buffer does not mean audio has ended.
+    bool atEnd() const override { return false; }
     quint64 noteOn(int midi, int velocity = 96);
     void noteOff(int midi);
     void noteOffVoice(quint64 voiceId);
-    void startSequence(const QVector<NoteEvent> &notes, int tempo, double startBeat = 0.0);
+    void startSequence(const QVector<NoteEvent> &notes, int tempo, double startBeat = 0.0, bool metronome = false, qint64 preRollFrames = 0);
+    void startReference(ReferenceAudioPtr audio, int tempo, double startSeconds,
+                        double rate, bool metronome = false,
+                        double scoreStartSeconds = 0.0,
+                        qint64 preRollFrames = 0);
     void stopSequence();
+    void setSequenceMetronomeEnabled(bool enabled);
     void click(bool accent);
     void allOff();
     void setMuted(bool muted);
@@ -36,6 +50,10 @@ public:
     void setInstrument(SynthInstrument instrument);
     void setOutputSampleRate(int sampleRate);
     void prepareAudioRecovery();
+    qint64 renderedFrameCount() const { return m_totalRenderedFrames.load(std::memory_order_relaxed); }
+    qint64 sequenceOriginFrame() const { return m_sequenceOriginFrame.load(std::memory_order_relaxed); }
+    quint64 sequenceSerial() const { return m_sequenceSerial.load(std::memory_order_relaxed); }
+    int outputSampleRate() const { return m_sampleRate; }
     qint64 readData(char *data, qint64 maxlen) override;
     qint64 writeData(const char *, qint64) override { return 0; }
     bool recordedPianoAvailable() const { return bool(m_recordedPiano); }
@@ -68,6 +86,7 @@ private:
         int note;
         int velocity;
         quint64 voiceId;
+        bool metronome = false;
     };
     struct RecordedVoice {
         quint64 id;
@@ -117,6 +136,9 @@ private:
     void startRecordedVoice(quint64 id,int note,int velocity,bool sequenced);
     void stopRecordedVoice(quint64 id);
     void stopRecordedVoices(bool sequencedOnly);
+    void clearTimelineAudio();
+    void beginTimeline(qint64 preRollFrames);
+    void scheduleMetronome(int tempo, double startBeat, double endBeat);
     quint64 m_nextVoiceId = 1;
     std::shared_ptr<const RecordedPianoLibrary> m_recordedPiano;
     QVector<RecordedVoice> m_recordedVoices;
@@ -124,28 +146,65 @@ private:
     qsizetype m_sequenceIndex = 0;
     qint64 m_sequenceFrame = 0;
     bool m_sequenceActive = false;
+    bool m_sequenceMetronomeEnabled = false;
+    ReferenceAudioPtr m_referenceAudio;
+    double m_referencePosition = 0.0;
+    double m_referenceStep = 1.0;
+    bool m_referenceActive = false;
+    int m_referenceStartupFrames = 0;
+    double m_referenceStartupLeft = 0.0;
+    double m_referenceStartupRight = 0.0;
+    // These are absolute stream positions, unlike m_sequenceFrame which is
+    // reset for each score. QAudioSink reports one continuous processed-time
+    // clock, so the UI can map the audible output frame back to beat zero of
+    // the current sequence without guessing the queued buffer latency.
+    std::atomic<qint64> m_totalRenderedFrames {0};
+    std::atomic<qint64> m_sequenceOriginFrame {-1};
+    std::atomic<quint64> m_sequenceSerial {0};
 };
 
 class Synthesizer : public QObject {
     Q_OBJECT
 public:
     explicit Synthesizer(QObject *parent = nullptr);
+    ~Synthesizer() override;
     quint64 noteOn(int midi, int velocity = 96) { return m_stream.noteOn(midi, velocity); }
     void noteOff(int midi) { m_stream.noteOff(midi); }
     void noteOffVoice(quint64 voiceId) { m_stream.noteOffVoice(voiceId); }
-    void startSequence(const QVector<NoteEvent> &notes, int tempo, double startBeat = 0.0) { m_stream.startSequence(notes, tempo, startBeat); }
-    void stopSequence() { m_stream.stopSequence(); }
+    void startSequence(const QVector<NoteEvent> &notes, int tempo, double startBeat = 0.0, bool metronome = false);
+    void startReference(ReferenceAudioPtr audio, int tempo, double startSeconds,
+                        double rate, bool metronome = false,
+                        double scoreStartSeconds = 0.0);
+    void stopSequence();
+    void setSequenceMetronomeEnabled(bool enabled) { m_stream.setSequenceMetronomeEnabled(enabled); }
     void click(bool accent) { m_stream.click(accent); }
     void allOff() { m_stream.allOff(); }
     void setMuted(bool muted) { m_stream.setMuted(muted); }
     void setVolume(double volume) { m_stream.setVolume(volume); }
     void setInstrument(SynthInstrument instrument) { m_stream.setInstrument(instrument); }
+    std::optional<double> sequencePlaybackSeconds() const;
+    bool outputFailed() const;
     static bool saveWav(const QString &path,const QVector<NoteEvent> &notes,int tempo,QString *error = nullptr,
                         SynthInstrument instrument = SynthInstrument::AcousticGrand);
-    bool available() const { return bool(m_sink); }
+    bool available() const { return m_available; }
+    int outputSampleRate() const { return m_outputSampleRate; }
 
 private:
+    // The GUI owns Synthesizer, but neither the sink's refill timer nor its
+    // QIODevice may live on that event loop: dense score painting can delay
+    // it long enough to starve otherwise correctly scheduled sample audio.
     SynthStream m_stream;
+    QThread m_outputThread;
+    QObject *m_outputContext = nullptr;
+    // Owned and destroyed on the output thread. Keep the member present even
+    // in builds without libpulse, so diagnostic clients share one layout.
+    PulseAudioOutput *m_pulse = nullptr;
     std::unique_ptr<QAudioSink> m_sink;
+    bool m_available = false;
     bool m_recoveringAudio = false;
+    qint64 m_sinkFrameBase = 0;
+    int m_outputSampleRate = 48000;
+    void startOutputThread();
+    void onOutputThread(const std::function<void()> &work) const;
+    void restartSink();
 };

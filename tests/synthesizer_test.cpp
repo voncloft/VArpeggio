@@ -1,13 +1,39 @@
 #include "synthesizer.h"
+#ifdef VARPEGGIO_HAVE_PULSEAUDIO
+#include "pulseaudiooutput.h"
+#endif
 
 #include <QByteArray>
 #include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QFile>
+#include <QPointer>
 #include <QTemporaryDir>
+#include <QThread>
+#include <QTimer>
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <iostream>
+
+// Test-only access to the same worker lifecycle without opening any audio
+// device. The fixture supplies a timer-driven pull consumer on that worker.
+template<class Tag,typename Tag::type Member>struct SynthTestAccess{
+    friend typename Tag::type get(Tag){return Member;}
+};
+struct StartOutputThreadTag{
+    using type=void(Synthesizer::*)();friend type get(StartOutputThreadTag);
+};
+template struct SynthTestAccess<StartOutputThreadTag,&Synthesizer::startOutputThread>;
+struct OutputContextTag{
+    using type=QObject* Synthesizer::*;friend type get(OutputContextTag);
+};
+template struct SynthTestAccess<OutputContextTag,&Synthesizer::m_outputContext>;
+struct OutputStreamTag{
+    using type=SynthStream Synthesizer::*;friend type get(OutputStreamTag);
+};
+template struct SynthTestAccess<OutputStreamTag,&Synthesizer::m_stream>;
 
 static QVector<float> render(SynthStream &stream, int frames) {
     QByteArray bytes(frames * 2 * int(sizeof(float)), Qt::Uninitialized);
@@ -42,6 +68,110 @@ int main(int argc, char **argv) {
     SynthStream stream;
     bool ok = true;
     ok &= check(stream.recordedPianoAvailable(),"CC0 Kawai recording library is loaded");
+
+    // Exercise QIODevice::read(), as QAudioSink does, rather than calling the
+    // generator directly. A buffered device silently rendered 16 KiB for an
+    // eight-byte request and carried that cached audio across score restarts.
+    SynthStream exactReads;
+    ok &= check(exactReads.isSequential()&&!exactReads.atEnd(),
+                "a continuous audio generator never advertises EOF while silent");
+    const auto quietFrame=exactReads.read(8);
+    ok &= check(quietFrame.size()==8&&exactReads.renderedFrameCount()==1&&exactReads.bytesAvailable()==0,
+                "live sink reads render exactly the requested frames without hidden read-ahead");
+    exactReads.startSequence({{72,0,1,110,Hand::Right}},120);
+    const auto liveAttack=exactReads.read(4096);
+    float livePeak=0;
+    for(int i=0;i<liveAttack.size()/int(sizeof(float));++i){float value=0;std::memcpy(&value,liveAttack.constData()+i*sizeof(float),sizeof(float));livePeak=std::max(livePeak,std::abs(value));}
+    ok &= check(livePeak>.005f&&exactReads.renderedFrameCount()==513,
+                "a restarted live score delivers its complete first attack instead of cached silence");
+    exactReads.stopSequence();
+    ok &= check(!exactReads.atEnd()&&exactReads.read(8).size()==8,
+                "stopping a score leaves the live device available for future samples");
+#ifdef VARPEGGIO_HAVE_PULSEAUDIO
+    // A missing native server must be a bounded, harmless fallback, not an
+    // attempt to spawn a sound daemon or an unbounded wait. This path never
+    // opens a playback stream and must not consume any generated samples.
+    if(qEnvironmentVariableIsSet("VARPEGGIO_TEST_NATIVE_PULSE_UNAVAILABLE")){
+        QTemporaryDir noServerDirectory;
+        const bool hadServer=qEnvironmentVariableIsSet("PULSE_SERVER");
+        const QByteArray previousServer=qgetenv("PULSE_SERVER");
+        qputenv("PULSE_SERVER",("unix:"+noServerDirectory.path()+"/missing.sock").toUtf8());
+        const qint64 beforeAbsentServer=exactReads.renderedFrameCount();
+        QElapsedTimer absentServerTime;absentServerTime.start();
+        {
+            PulseAudioOutput absentServer(exactReads,48000,98304);
+            ok &= check(!absentServer.available()&&!absentServer.start()
+                        &&!absentServer.processedFrames(),
+                        "unavailable native output exposes no fabricated playback clock");
+            absentServer.reset();
+        }
+        if(hadServer)qputenv("PULSE_SERVER",previousServer);else qunsetenv("PULSE_SERVER");
+        ok &= check(absentServerTime.elapsed()<4000
+                    &&exactReads.renderedFrameCount()==beforeAbsentServer,
+                    "native fallback and teardown are bounded and consume no source samples");
+    }else std::cout<<"SKIP: native missing-server fixture (set VARPEGGIO_TEST_NATIVE_PULSE_UNAVAILABLE=1 with local-socket access).\n";
+#endif
+
+    // Exercise the production worker, dispatcher and shutdown with no sound
+    // device. A deliberate GUI-thread sleep must not starve its refill timer.
+    // This is not evidence about physical output; live backend checks are
+    // separate. It guards the event-loop isolation that those checks require.
+    QPointer<QObject> deletedOutputContext;
+    bool streamDestroyedOnOwner=false,contextDestroyedOnWorker=false;
+    QThread *ownerThread=QThread::currentThread();
+    {
+        const bool hadNoAudio=qEnvironmentVariableIsSet("VARPEGGIO_NO_AUDIO");
+        const QByteArray previousNoAudio=qgetenv("VARPEGGIO_NO_AUDIO");
+        qputenv("VARPEGGIO_NO_AUDIO","1");
+        Synthesizer threaded;
+        if(hadNoAudio)qputenv("VARPEGGIO_NO_AUDIO",previousNoAudio);else qunsetenv("VARPEGGIO_NO_AUDIO");
+        (threaded.*get(StartOutputThreadTag{}))();
+        QObject *context=threaded.*get(OutputContextTag{});
+        SynthStream &workerStream=threaded.*get(OutputStreamTag{});
+        deletedOutputContext=context;
+        ok &= check(threaded.thread()==ownerThread&&context->thread()!=ownerThread
+                    &&workerStream.parent()==nullptr&&workerStream.thread()==context->thread(),
+                    "only the sink context and parentless source move off the GUI thread");
+        QObject::connect(&workerStream,&QObject::destroyed,[&]{streamDestroyedOnOwner=QThread::currentThread()==ownerThread;});
+        QObject::connect(context,&QObject::destroyed,[&]{contextDestroyedOnWorker=QThread::currentThread()!=ownerThread;});
+        threaded.startSequence({{60,0,8,100,Hand::Right}},120);
+        QTimer *pullTimer=nullptr;
+        QByteArray workerPcm;
+        std::atomic<int> pulls{0};
+        std::atomic<bool> readWrongThread{false};
+        QMetaObject::invokeMethod(context,[&]{
+            pullTimer=new QTimer(context);
+            pullTimer->setTimerType(Qt::PreciseTimer);
+            QObject::connect(pullTimer,&QTimer::timeout,context,[&]{
+                if(QThread::currentThread()!=workerStream.thread())readWrongThread=true;
+                const QByteArray bytes=workerStream.read(512*2*sizeof(float));
+                if(bytes.size()==512*2*sizeof(float)){workerPcm.append(bytes);++pulls;}
+            });
+            pullTimer->start(2);
+        },Qt::BlockingQueuedConnection);
+        QThread::msleep(80); // Intentionally do not process GUI events.
+        ok &= check(pulls.load()>=3&&workerStream.renderedFrameCount()>=1536&&!readWrongThread.load(),
+                    "audio-thread sample pulls continue while the GUI event loop is blocked");
+        QMetaObject::invokeMethod(context,[&]{pullTimer->stop();},Qt::BlockingQueuedConnection);
+        SynthStream offlineWorkerReference;
+        offlineWorkerReference.startSequence({{60,0,8,100,Hand::Right}},120);
+        ok &= check(!workerPcm.isEmpty()&&offlineWorkerReference.read(workerPcm.size())==workerPcm,
+                    "worker-thread scheduling preserves the exact offline piano PCM bytes");
+        bool directDispatchWorked=false;
+        const auto workerReference=ReferenceAudioData::fromSamples(48000,QVector<float>(128,0.0f));
+        QMetaObject::invokeMethod(context,[&]{
+            // Calling public transport/getters from the owner must execute
+            // directly rather than deadlocking on a blocking self-invocation.
+            threaded.startReference(workerReference,120,0.0,1.0);
+            threaded.stopSequence();
+            directDispatchWorked=!threaded.outputFailed()&&!threaded.sequencePlaybackSeconds();
+            pullTimer->stop();delete pullTimer;pullTimer=nullptr;
+        },Qt::BlockingQueuedConnection);
+        ok &= check(directDispatchWorked&&!threaded.available(),
+                    "owner-thread transport and clock calls dispatch without a sink or self-deadlock");
+    }
+    ok &= check(deletedOutputContext.isNull()&&contextDestroyedOnWorker&&streamDestroyedOnOwner,
+                "shutdown deletes the worker context and returns the source to its owning thread");
 
     // A dense chord used to hit the old hard limiter and sound like static.
     for (int note = 36; note <= 96; note += 3) stream.noteOn(note, 112);
@@ -85,6 +215,139 @@ int main(int argc, char **argv) {
     ok &= check(scheduledPeak>.03f,"sample-clock score playback produces audio");
     ok &= check(scheduledStep<.08f,"sample-clock repeated notes remain click-free");
     stream.stopSequence();
+
+    // Sequence time zero is an absolute rendered-stream frame. This is the
+    // contract used to align QAudioSink's processed clock with the orange
+    // playhead even when the sink already has silence queued ahead of a song.
+    SynthStream clocked;
+    render(clocked,4096);
+    const qint64 beforeSequence=clocked.renderedFrameCount();
+    clocked.startSequence({{60,0,.5,100,Hand::Right}},120);
+    ok &= check(clocked.sequenceOriginFrame()==beforeSequence,
+                "sequence clock begins at the next absolute rendered frame");
+    const quint64 clockSerial=clocked.sequenceSerial();
+    render(clocked,2048);
+    ok &= check(clocked.renderedFrameCount()==beforeSequence+2048&&clocked.sequenceOriginFrame()==beforeSequence,
+                "rendering advances the absolute audio clock without moving sequence time zero");
+    clocked.startSequence({{64,0,.5,100,Hand::Right}},120);
+    ok &= check(clocked.sequenceSerial()==clockSerial+1&&clocked.sequenceOriginFrame()==clocked.renderedFrameCount(),
+                "restarting a score creates a fresh audio-clock origin");
+
+    SynthStream primed;
+    primed.startSequence({{72,0,.5,110,Hand::Right}},120,0.0,false,4096);
+    ok &= check(primed.sequenceOriginFrame()==4096&&rms(render(primed,4096))<.0001,
+                "device priming stays silent until the exact musical audio-clock origin");
+    ok &= check(rms(render(primed,4096))>.005,
+                "the complete first note begins after device priming without dropping its attack");
+
+    // Original-recording playback uses the same exact sample clock. Preserve
+    // decoded stereo PCM, seek into source time, and resample linearly when a
+    // playback-rate change advances by more than one source frame at a time.
+    QVector<float> referenceSamples;
+    for(int frame=0;frame<16;++frame){referenceSamples.append(float(.02+.01*frame));referenceSamples.append(float(-.04-.005*frame));}
+    const auto referenceAudio=ReferenceAudioData::fromSamples(48000,std::move(referenceSamples));
+    SynthStream referenceRate;
+    referenceRate.setOutputSampleRate(48000);
+    referenceRate.startReference(referenceAudio,120,2.0/48000.0,2.0);
+    const auto rateOutput=renderStereo(referenceRate,3);
+    constexpr double defaultVolume=1.0;
+    ok &= check(std::abs(rateOutput[0]-float(.04*defaultVolume))<.00001f
+                &&std::abs(rateOutput[1]-float(-.05*defaultVolume))<.00001f
+                &&std::abs(rateOutput[2]-float(.06*defaultVolume))<.00001f
+                &&std::abs(rateOutput[3]-float(-.06*defaultVolume))<.00001f
+                &&std::abs(rateOutput[4]-float(.08*defaultVolume))<.00001f
+                &&std::abs(rateOutput[5]-float(-.07*defaultVolume))<.00001f,
+                "reference PCM preserves stereo while seek and playback rate select source frames");
+
+    SynthStream referenceFraction;
+    referenceFraction.setOutputSampleRate(48000);
+    referenceFraction.startReference(referenceAudio,120,.5/48000.0,1.0);
+    const auto fractionOutput=renderStereo(referenceFraction,1);
+    ok &= check(std::abs(fractionOutput[0]-float(.025*defaultVolume))<.00001f
+                &&std::abs(fractionOutput[1]-float(-.0425*defaultVolume))<.00001f,
+                "reference PCM uses linear interpolation between decoded source frames");
+
+    QVector<float> hardSeekSamples;
+    for(int frame=0;frame<80;++frame){hardSeekSamples.append(1.0f);hardSeekSamples.append(-1.0f);}
+    const auto hardSeekAudio=ReferenceAudioData::fromSamples(48000,std::move(hardSeekSamples));
+    SynthStream hardSeek;
+    hardSeek.startReference(hardSeekAudio,120,0.0,1.0);
+    const auto guardedSeek=renderStereo(hardSeek,65);
+    bool startupBounded=std::abs(guardedSeek[0])<=.07501f&&std::abs(guardedSeek[1])<=.07501f;
+    for(int frame=1;frame<64;++frame){
+        startupBounded=startupBounded
+            &&std::abs(guardedSeek[frame*2]-guardedSeek[(frame-1)*2])<=.07501f
+            &&std::abs(guardedSeek[frame*2+1]-guardedSeek[(frame-1)*2+1])<=.07501f;
+    }
+    ok &= check(startupBounded,
+                "reference seek begins with a bounded source-only transport edge");
+    ok &= check(std::abs(guardedSeek[128]-1.0f)<.00001f
+                &&std::abs(guardedSeek[129]+1.0f)<.00001f,
+                "reference PCM is untouched after the 64-frame startup guard");
+    hardSeek.stopSequence();hardSeek.startReference(hardSeekAudio,120,0.0,1.0);
+    const auto restartedSeek=renderStereo(hardSeek,1);
+    ok &= check(std::abs(restartedSeek[0])<=.07501f&&std::abs(restartedSeek[1])<=.07501f,
+                "restarting reference playback resets the transport-edge guard");
+
+    SynthStream primedReference;
+    primedReference.setOutputSampleRate(48000);
+    primedReference.startReference(referenceAudio,120,0.0,1.0,false,0.0,4);
+    ok &= check(primedReference.sequenceOriginFrame()==4&&rms(renderStereo(primedReference,4))<.000001,
+                "reference PCM stays silent through device priming on the shared clock");
+    const auto firstReferenceFrame=renderStereo(primedReference,1);
+    ok &= check(std::abs(firstReferenceFrame[0]-float(.02*defaultVolume))<.00001f
+                &&std::abs(firstReferenceFrame[1]-float(-.04*defaultVolume))<.00001f,
+                "reference PCM begins at its complete first frame after priming");
+
+    SynthStream stoppedReference;
+    stoppedReference.startReference(referenceAudio,120,0.0,1.0);
+    stoppedReference.stopSequence();
+    ok &= check(rms(renderStereo(stoppedReference,32))<.000001,
+                "transport stop releases the decoded reference recording");
+    stoppedReference.startReference(referenceAudio,120,0.0,1.0);
+    stoppedReference.allOff();
+    ok &= check(rms(renderStereo(stoppedReference,32))<.000001,
+                "all-notes-off also releases the decoded reference recording");
+
+    SynthStream replacedReference;
+    replacedReference.startReference(referenceAudio,120,0.0,1.0);
+    replacedReference.startSequence({{60,4,.5,100,Hand::Right}},120);
+    ok &= check(rms(renderStereo(replacedReference,32))<.000001,
+                "starting generated score audio cannot leak an older reference recording");
+
+    QVector<float> silentReferenceSamples(48000*2,0.0f);
+    const auto silentReference=ReferenceAudioData::fromSamples(48000,std::move(silentReferenceSamples));
+    SynthStream referenceMetro;
+    referenceMetro.startReference(silentReference,120,.25,1.0,true,.25);
+    ok &= check(rms(renderStereo(referenceMetro,4096))>.001,
+                "reference metronome and trimmed score origin share the first output frame");
+
+    // A transport stop is a hard output boundary. Old sequenced voices must
+    // not keep leaking into the buffer which follows Pause, Stop, or a seek.
+    SynthStream transported;
+    transported.startSequence({{60,0,8,110,Hand::Right}},120);
+    ok &= check(rms(render(transported,4096))>.005,"transport fixture begins with audible score audio");
+    transported.stopSequence();
+    const auto stoppedTransport=render(transported,2048);
+    ok &= check(rms(stoppedTransport,128)<.0001,"transport stop discards the previous score audio immediately");
+
+    // Internal metronome attacks share the sample-clock schedule. They are not
+    // injected later by the GUI after the orange line has already crossed the
+    // beat (which would put them one complete output buffer behind).
+    const QVector<NoteEvent> delayedPiano{{60,4,.5,100,Hand::Right}};
+    SynthStream noMetro;noMetro.startSequence(delayedPiano,120);
+    ok &= check(rms(render(noMetro,4096))<.0001,"delayed piano stays silent before its written attack");
+    SynthStream sampleMetro;sampleMetro.startSequence(delayedPiano,120,0.0,true);
+    const auto firstMetronomeBeat=render(sampleMetro,4096);
+    ok &= check(rms(firstMetronomeBeat)>.001,"metronome is rendered at the same sample-clock beat as the score cursor");
+    noMetro.setSequenceMetronomeEnabled(true);
+    render(noMetro,24000-4096);
+    ok &= check(rms(render(noMetro,4096))>.001,
+                "enabling the metronome during playback joins the existing sample clock");
+    noMetro.setSequenceMetronomeEnabled(false);
+    render(noMetro,24000-4096);
+    ok &= check(rms(render(noMetro,4096))<.0001,
+                "disabling the metronome suppresses later scheduled clicks");
 
     // If the desktop audio server starves the sink, restarting at full sample
     // amplitude creates a second crack when sound resumes. Recovery begins at

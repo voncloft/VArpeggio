@@ -4,6 +4,7 @@
 #include "musicdocument.h"
 #include "musicwidgets.h"
 #include "synthesizer.h"
+#include "referenceaudio.h"
 
 #include <QElapsedTimer>
 #include <QDate>
@@ -16,14 +17,12 @@
 #include <memory>
 
 class QButtonGroup;
-class QAudioOutput;
 class QAction;
 class QCheckBox;
 class QComboBox;
 class QFrame;
 class QLabel;
 class QLineEdit;
-class QMediaPlayer;
 class QPushButton;
 class QScrollBar;
 class QSlider;
@@ -52,6 +51,7 @@ public:
                                       QWidget *parent, QString *error);
 
 protected:
+    bool event(QEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
     void keyReleaseEvent(QKeyEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
@@ -69,6 +69,7 @@ private:
     void showHelpManual();
     void applyStyle();
     void connectUi();
+    double importedMediaPlaybackSeconds();
 
     void setMode(Mode mode);
     void setSong(const QString &title, const QVector<NoteEvent> &notes, int tempo = 96,
@@ -215,12 +216,18 @@ private:
     MidiInput m_midi;
     MidiOutput m_midiOutput;
     QTimer m_frameTimer;
+    bool m_updatingClocks = false;
     QElapsedTimer m_playClock, m_recordClock, m_freePlayClock, m_metroClock;
     QElapsedTimer m_waitAdvanceClock;
     double m_waitBeat = 0.0;
     qint64 m_lastWaitAdvanceMs = 0;
     double m_freePlayOffsetBeat = 0.0;
     double m_playbackOffsetSeconds = 0.0;
+    double m_playbackDisplayBeat = -1.0;
+    ReferenceAudioLoader *m_referenceLoader = nullptr;
+    ReferenceAudioPtr m_referenceAudio;
+    bool m_referencePendingPlayback = false;
+    QString m_referenceError;
     int m_lastMetroBeat = -1;
     QString m_importedMediaPath;
     qint64 m_importedMediaStartMs = 0;
@@ -274,8 +281,6 @@ private:
     QCheckBox *m_sound = nullptr;
     QCheckBox *m_midiOutputCheck = nullptr;
     QSlider *m_volume = nullptr;
-    QMediaPlayer *m_sourcePlayer = nullptr;
-    QAudioOutput *m_sourceAudioOutput = nullptr;
     QButtonGroup *m_modeButtons = nullptr;
     QButtonGroup *m_handButtons = nullptr;
     QButtonGroup *m_scoreDisplayButtons = nullptr;

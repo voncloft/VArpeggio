@@ -90,6 +90,35 @@ Soundtrack-only polyphonic transcription remains experimental. Clean solo piano 
 - Long notes remain visible as ties and held-note indicators for their complete sounding duration.
 - Right, Left, and Together filters support separate-hand practice.
 
+Generated-score playback uses the audio output position for the orange line,
+falling notes, and lit piano keys. This is shared by Listen, Play Along, and
+Free Play preview for every playable score source; there are no song-specific
+timing offsets. On Linux with libpulse, playback queries fresh device
+presentation timing instead of averaging past hardware-buffer delays. Qt
+audio remains available as a fallback. Audio output has its own event thread,
+so drawing a busy score does not block piano-sample refills. An underrun wakes the existing stream
+instead of resetting it and discarding queued sound. During device priming,
+the orange line stays visible as a dashed marker parked at the start/resume
+point; notes and keys do not falsely
+light before output begins. The shared visual position is refreshed again
+immediately before the window draws, so a late display update cannot reuse
+an older timer snapshot. Pause, seek, resume, and tempo changes establish a
+new output-clock position. The internal metronome is scheduled with the
+generated notes, rather than added after a
+display update.
+
+The optional original-recording reference is decoded to a temporary,
+disk-backed audio cache and played through that same output clock, including
+its metronome. The source file is never modified. If preparation is still in
+progress, Play waits for it and can be cancelled; a decoding error is shown
+instead of starting a silent moving score. Changing reference-recording
+speed uses resampling, which also changes its pitch; generated-score tempo
+changes retain the written pitches.
+
+External MIDI equipment and the desktop's audio/display presentation can add
+latency; synchronization is not a promise of zero physical delay. External-MIDI
+metronome clicks still use the separate internal piano output.
+
 ## Interface and remembered settings
 
 - The Grand Staff, combined Bubbles and Live Coach area, and Keyboard are independently collapsible. Their open or closed states are restored the next time VArpeggio starts.
@@ -349,7 +378,7 @@ Soundtrack-only polyphonic transcription remains experimental. Clean solo piano 
 
 ## Build
 
-Required development and runtime components include Qt 6 Core, Widgets, Multimedia, XML, SVG, PDF/PDF Widgets, Concurrent, and Network; ALSA; OpenCV 4; zlib; and libsndfile. Python 3, FFmpeg, Poppler's `pdfdetach`, `rsvg-convert`, `pdfunite`, and `pdfattach` support media and engraved-score workflows. `bsdtar` or Flatpak is used for automatic Audiveris setup.
+Required development and runtime components include Qt 6 Core, Widgets, Multimedia, XML, SVG, PDF/PDF Widgets, Concurrent, and Network; ALSA; OpenCV 4; zlib; and libsndfile. On Linux, installing the `libpulse` development package enables native PulseAudio output and its presentation clock; Qt audio remains the fallback when that backend is unavailable. Python 3, FFmpeg, Poppler's `pdfdetach`, `rsvg-convert`, `pdfunite`, and `pdfattach` support media and engraved-score workflows. `bsdtar` or Flatpak is used for automatic Audiveris setup.
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -357,6 +386,10 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ./build/varpeggio
 ```
+
+The default tests need no audio device. With local socket access, the optional
+native-Pulse unavailable-server check can also be run with
+`VARPEGGIO_NO_AUDIO=1 VARPEGGIO_TEST_NATIVE_PULSE_UNAVAILABLE=1 ./build/varpeggio_synth_tests`.
 
 ## System installation and packaging
 

@@ -13,6 +13,9 @@ find_package(OpenCV 4 REQUIRED COMPONENTS core imgproc)
 find_package(ZLIB REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SNDFILE REQUIRED IMPORTED_TARGET sndfile)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    pkg_check_modules(PULSEAUDIO QUIET IMPORTED_TARGET libpulse)
+endif()
 
 qt_add_executable(varpeggio
     src/main.cpp
@@ -23,6 +26,7 @@ qt_add_executable(varpeggio
     src/audiverisbridge.h src/audiverisbridge.cpp
     src/musicwidgets.h src/musicwidgets.cpp
     src/synthesizer.h src/synthesizer.cpp
+    src/referenceaudio.h src/referenceaudio.cpp
     src/midiinput.h src/midiinput.cpp
 )
 
@@ -32,6 +36,11 @@ target_link_libraries(varpeggio PRIVATE
     ${OpenCV_LIBS} ZLIB::ZLIB PkgConfig::SNDFILE
 )
 target_include_directories(varpeggio PRIVATE ${OpenCV_INCLUDE_DIRS})
+if(TARGET PkgConfig::PULSEAUDIO)
+    target_sources(varpeggio PRIVATE src/pulseaudiooutput.h src/pulseaudiooutput.cpp)
+    target_link_libraries(varpeggio PRIVATE PkgConfig::PULSEAUDIO)
+    target_compile_definitions(varpeggio PRIVATE VARPEGGIO_HAVE_PULSEAUDIO=1)
+endif()
 
 target_compile_definitions(varpeggio PRIVATE
     VARPEGGIO_VERSION="${PROJECT_VERSION}"
@@ -64,10 +73,20 @@ if(BUILD_TESTING)
     add_test(NAME varpeggio_musicdocument COMMAND varpeggio_tests)
     set_tests_properties(varpeggio_musicdocument PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
-    qt_add_executable(varpeggio_synth_tests tests/synthesizer_test.cpp src/synthesizer.h src/synthesizer.cpp)
+    qt_add_executable(varpeggio_synth_tests tests/synthesizer_test.cpp src/synthesizer.h src/synthesizer.cpp src/referenceaudio.h src/referenceaudio.cpp)
     target_include_directories(varpeggio_synth_tests PRIVATE src)
     target_link_libraries(varpeggio_synth_tests PRIVATE Qt6::Core Qt6::Multimedia PkgConfig::SNDFILE)
+    if(TARGET PkgConfig::PULSEAUDIO)
+        target_sources(varpeggio_synth_tests PRIVATE src/pulseaudiooutput.h src/pulseaudiooutput.cpp)
+        target_link_libraries(varpeggio_synth_tests PRIVATE PkgConfig::PULSEAUDIO)
+        target_compile_definitions(varpeggio_synth_tests PRIVATE VARPEGGIO_HAVE_PULSEAUDIO=1)
+    endif()
     add_test(NAME varpeggio_synthesizer COMMAND varpeggio_synth_tests)
+
+    qt_add_executable(varpeggio_referenceaudio_tests tests/referenceaudio_test.cpp src/referenceaudio.h src/referenceaudio.cpp)
+    target_include_directories(varpeggio_referenceaudio_tests PRIVATE src)
+    target_link_libraries(varpeggio_referenceaudio_tests PRIVATE Qt6::Core Qt6::Multimedia)
+    add_test(NAME varpeggio_referenceaudio COMMAND varpeggio_referenceaudio_tests)
 
     qt_add_executable(varpeggio_pdf_tests tests/pdfrecognizer_test.cpp src/pdfrecognizer.h src/pdfrecognizer.cpp)
     target_include_directories(varpeggio_pdf_tests PRIVATE src ${OpenCV_INCLUDE_DIRS})

@@ -7,6 +7,7 @@
 #include <QPainterPath>
 #include <QtMath>
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 namespace {
@@ -67,9 +68,14 @@ StaffPlacement staffPlacement(const NoteEvent &note,int fifths,double verticalOf
     // octave notation is clearer. Move only the written head; playback and
     // labels continue to use the note's real MIDI pitch.
     const double upperLimit=note.hand==Hand::Right?95.0:185.0;
-    const double lowerLimit=note.hand==Hand::Right?215.0:315.0;
+    // Bass notes below C2 become markedly clearer as an 8vb passage. The
+    // former 315-unit cutoff left C1-Bb1 underneath the staff, where ledger
+    // lines, note names, and finger numbers collapsed into the frame edge.
+    const double lowerLimit=note.hand==Hand::Right?215.0:285.0;
     while(placement.y<upperLimit&&placement.octaveDisplacement<2){placement.y+=35.0;++placement.octaveDisplacement;}
-    while(placement.y>lowerLimit&&placement.octaveDisplacement>-2){placement.y-=35.0;--placement.octaveDisplacement;}
+    // The 88-key bass end is conventionally readable with one 8vb shift;
+    // retaining that single shift also preserves the established A0 layout.
+    while(placement.y>lowerLimit&&placement.octaveDisplacement>-1){placement.y-=35.0;--placement.octaveDisplacement;}
     return placement;
 }
 QString staffPitchName(const NoteEvent &note,int fifths){return MusicDocument::spelledNoteName(note.note,fifths,note.accidental,true,note.writtenStep,note.writtenAlter);}
@@ -411,10 +417,18 @@ QVector<NoteEvent> withSuggestedFingering(QVector<NoteEvent> notes){
 }
 }
 
-ScoreWidget::ScoreWidget(QWidget *parent):QWidget(parent){setMinimumHeight(190);setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Expanding);}
+ScoreWidget::ScoreWidget(QWidget *parent):QWidget(parent){setAttribute(Qt::WA_OpaquePaintEvent);setMinimumHeight(190);setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Expanding);}
 void ScoreWidget::setNotes(const QVector<NoteEvent>&n){m_viewStartOverride=-1;m_notes=withSuggestedFingering(n);updateGeometry();update();emit frameHeightHintChanged(recommendedFrameHeight());}
 void ScoreWidget::setExpected(const QSet<int>&n,double start){m_expected=n;m_groupStart=start;update();}
 void ScoreWidget::setPlayedBeat(double b){m_playedBeat=b;update();}
+void ScoreWidget::setPlaybackCursorVisible(bool visible){if(m_playbackCursorVisible==visible)return;m_playbackCursorVisible=visible;update();}
+void ScoreWidget::setPlaybackWaiting(double beat){
+    const double next=std::isfinite(beat)&&beat>=0.0?beat:-1.0;
+    if(m_playbackWaitingBeat==next&&(next<0.0||m_playbackCursorVisible))return;
+    m_playbackWaitingBeat=next;
+    if(next>=0.0)m_playbackCursorVisible=true;
+    update();
+}
 void ScoreWidget::setFollowBeat(double b){
     const double next=qMax(0.0,b);
     if(m_viewStartOverride>=0){
@@ -454,6 +468,7 @@ QPair<double,double> ScoreWidget::measureRangeAt(double beat)const{return measur
 double ScoreWidget::measureEndAt(double beat)const{const auto measure=measureRangeAt(beat);return measure.first+measure.second;}
 int ScoreWidget::measureNumberAt(double beat)const{return measureOrdinalAt(m_timeSignatures,qMax(0.0,beat));}
 double ScoreWidget::viewStartBeat()const{return viewRange().first;}
+double ScoreWidget::viewWindowBeats()const{return viewRange().second;}
 void ScoreWidget::holdViewStart(double beat){m_viewStartOverride=qMax(0.0,beat);update();}
 void ScoreWidget::paintEvent(QPaintEvent*){QPainter p(this);paintScore(p,rect());}
 
@@ -473,7 +488,28 @@ QPair<double,double> ScoreWidget::viewRange() const {
         // enough horizontal room for notes, labels, and fingering. Resizing or
         // maximizing changes the number of visible measures, not the clef or
         // staff scale.
-        const int visibleMeasures=qBound(2,qMax(1,width())/520,5);
+        int visibleMeasures=qBound(2,qMax(1,width())/520,5);
+        // Page density follows the actual engraving load. A measure with a
+        // fast run, accidentals, labels, and fingering cannot share the same
+        // width as a sparse whole-note measure and remain readable. Reduce
+        // only the number of measures on this page; never shrink the clefs,
+        // noteheads, or teaching aids.
+        constexpr double usableNotationWidth=750.0,minAttackSpacing=34.0;
+        while(visibleMeasures>1){
+            const int attacksPerMeasure=qMax(1,int(std::floor((usableNotationWidth/visibleMeasures)/minAttackSpacing)));
+            bool crowded=false;
+            for(int slot=0;slot<visibleMeasures&&!crowded;++slot){
+                const double slotStart=measure.first+slot*measure.second,slotEnd=slotStart+measure.second;
+                QSet<qint64> leftAttacks,rightAttacks;
+                for(const auto &note:m_notes){
+                    if(!included(note,m_handFilter)||note.start<slotStart-.001||note.start>=slotEnd-.001)continue;
+                    (note.hand==Hand::Left?leftAttacks:rightAttacks).insert(qRound64(note.start*1000.0));
+                }
+                crowded=qMax(leftAttacks.size(),rightAttacks.size())>attacksPerMeasure;
+            }
+            if(!crowded)break;
+            --visibleMeasures;
+        }
         window=measure.second*visibleMeasures;
     }
     return {startBeat,window};
@@ -489,14 +525,32 @@ QRectF ScoreWidget::canvasViewport(const QRectF &) const {
         // lane below its nominal 320px position (and high RH notation can do
         // the inverse). Once a vertical chord stack is needed, expose the
         // complete safe canvas instead of estimating from finger count alone.
-        bool stackedNames=false;if(m_showNames){QVector<NoteEvent> ordered;for(const auto &note:m_notes)if(included(note,m_handFilter))ordered.append(note);std::sort(ordered.begin(),ordered.end(),[](const auto&a,const auto&b){return a.hand==b.hand?(qAbs(a.start-b.start)<.001?a.note<b.note:a.start<b.start):int(a.hand)<int(b.hand);});for(int first=0;first<ordered.size();){int end=first+1;while(end<ordered.size()&&ordered[end].hand==ordered[first].hand&&qAbs(ordered[end].start-ordered[first].start)<=.04)++end;if(end-first>1){stackedNames=true;break;}first=end;}}
-        if(sizes.first>1||sizes.second>1||stackedNames)return QRectF(0.0,0.0,scoreCanvasWidth,scoreCanvasHeight);
+        int rightStack=qMax(1,sizes.first),leftStack=qMax(1,sizes.second);
+        if(m_showNames){QVector<NoteEvent> ordered;for(const auto &note:m_notes)if(included(note,m_handFilter))ordered.append(note);std::sort(ordered.begin(),ordered.end(),[](const auto&a,const auto&b){return a.hand==b.hand?(qAbs(a.start-b.start)<.001?a.note<b.note:a.start<b.start):int(a.hand)<int(b.hand);});for(int first=0;first<ordered.size();){int end=first+1;while(end<ordered.size()&&ordered[end].hand==ordered[first].hand&&qAbs(ordered[end].start-ordered[first].start)<=.04)++end;const int count=end-first;if(ordered[first].hand==Hand::Right)rightStack=qMax(rightStack,count);else leftStack=qMax(leftStack,count);first=end;}}
+        if(rightStack>1||leftStack>1){
+            // Chord fingers and name bubbles stack away from their staff. The
+            // old full-canvas fallback still began at y=0, so a high treble
+            // stack could be drawn at a negative y and disappear. Reserve
+            // explicit overflow on the side where each hand's stack grows.
+            const double top=rightStack>1?-((rightStack-1)*16.0+24.0):0.0;
+            const double bottom=scoreCanvasHeight+(leftStack>1?(leftStack-1)*16.0+24.0:0.0);
+            return QRectF(0.0,top,scoreCanvasWidth,bottom-top);
+        }
     }
-    // Pedal teaching adds a compact PRESS/RELEASE cue beneath Ped. and *.
-    // Expose only the extra strip that notation needs instead of enlarging
-    // every score panel or changing either clef's fixed scale.
-    if(!m_pedalEvents.isEmpty())return QRectF(0.0,45.0,scoreCanvasWidth,325.0);
-    return QRectF(0.0,45.0,scoreCanvasWidth,298.0);
+    bool octaveAbove=false,octaveBelow=false;
+    for(const auto &note:m_notes){
+        if(!included(note,m_handFilter))continue;
+        const int displacement=staffPlacement(note,fifthsAt(m_keySignatures,note.start),scoreVerticalOffset).octaveDisplacement;
+        octaveAbove|=displacement>0;octaveBelow|=displacement<0;
+    }
+    // Keep the normal panel extremely tight, but expose the small outer lane
+    // whenever 8va/8vb/15ma/15mb is actually present. Previously the glyphs
+    // were drawn correctly and then cropped by the compact frame—most visibly
+    // the 8vb beneath A0/Bb0 in Free Play.
+    const double top=octaveAbove?4.0:45.0;
+    double bottom=!m_pedalEvents.isEmpty()?370.0:343.0;
+    if(octaveBelow)bottom=qMax(bottom,380.0);
+    return QRectF(0.0,top,scoreCanvasWidth,bottom-top);
 }
 
 int ScoreWidget::recommendedFrameHeight() const {
@@ -572,16 +626,23 @@ void ScoreWidget::paintScore(QPainter &p,const QRectF &target) const {
     double maxBeat=0;for(const auto&n:visible)maxBeat=qMax(maxBeat,n.start+n.duration);
     const auto range=viewRange();const double startBeat=range.first,window=range.second;
     const double followed=m_liveWriting?qMax(0.0,m_followBeat):qBound(0.0,m_followBeat,maxBeat);
+    // m_followBeat also anchors whichever historical page the user is viewing.
+    // During playback the orange cursor instead belongs to m_playedBeat, which
+    // is driven by the audio-output clock. This prevents scrolling to an older
+    // measure from moving the playback line away from the sound it represents.
+    const bool playbackWaiting=!m_editEnabled&&m_playbackWaitingBeat>=0.0;
+    const double cursorBeat=playbackWaiting?qBound(0.0,m_playbackWaitingBeat,maxBeat)
+        :(!m_editEnabled&&m_playedBeat>=0.0)?qBound(0.0,m_playedBeat,maxBeat):followed;
     // Beat zero must begin after the clef, key signature, and time signature.
     // Keeping those symbols in a dedicated header also prevents the first
     // recorded note from looking as though it belongs before the meter.
     const double musicLeft=225.0+qAbs(fifthsAt(m_keySignatures,startBeat))*8.0;
-    // Daily lesson material needs a short pickup lane between the opening
-    // barline/measure label and beat zero. Keep the header and M1 where they
-    // belong, then begin the timed notation a little farther right. This is
-    // deliberately lesson-only so imported scores retain their established
+    // Daily lessons and Free Play need a short pickup lane between the fixed
+    // header and beat zero. In Free Play this is essential for a first-note
+    // accidental: without it, the sharp/flat sits left of the notation clip
+    // and appears missing. Imported playback scores retain their established
     // page density.
-    const double notationLeft=musicLeft+(m_lessonOpeningInset?24.0:0.0);
+    const double notationLeft=musicLeft+((m_lessonOpeningInset||m_liveWriting)?24.0:0.0);
     const double musicRight=1000.0;
     const double scale=(musicRight-notationLeft)/window;
     // A barline marks the boundary immediately before its downbeat; it must
@@ -690,14 +751,14 @@ void ScoreWidget::paintScore(QPainter &p,const QRectF &target) const {
         const auto fingerSizes=maximumFingeringChordSizes(m_notes,m_handFilter);
         const double pedalLane=m_showFingering&&fingerSizes.second>1?414.0:286.0+verticalOffset;
         const double x1=notationLeft+(event.beat-startBeat)*scale,x2=notationLeft+(release-startBeat)*scale,y=pedalLane;
-        const bool pressExpected=m_expectedPedal==1&&qAbs(m_expectedPedalBeat-event.beat)<.02;
-        const bool releaseExpected=m_expectedPedal==0&&qAbs(m_expectedPedalBeat-release)<.02;
+        const bool pressExpected=!playbackWaiting&&m_expectedPedal==1&&qAbs(m_expectedPedalBeat-event.beat)<.02;
+        const bool releaseExpected=!playbackWaiting&&m_expectedPedal==0&&qAbs(m_expectedPedalBeat-release)<.02;
         p.setPen(pressExpected||releaseExpected?QColor("#ef775f"):QColor("#29433d"));
         if(event.beat>=startBeat-.001){p.setFont(QFont("Noto Serif",13,QFont::Bold));p.drawText(QPointF(x1,y),"Ped.");if(pressExpected){p.setFont(QFont("Manrope",8,QFont::Bold));p.drawText(QPointF(x1,y+14),"PRESS");}}
         if(released&&release<=startBeat+window+.001){p.setFont(QFont("Noto Serif",16,QFont::Bold));p.drawText(QPointF(x2-3,y+2),"*");if(releaseExpected){p.setFont(QFont("Manrope",8,QFont::Bold));p.drawText(QPointF(x2-12,y+16),"RELEASE");}}
     }
-    if(followed>=startBeat&&followed<=startBeat+window){
-        const double playX=notationLeft+(followed-startBeat)*scale;
+    if(m_playbackCursorVisible&&cursorBeat>=startBeat&&cursorBeat<=startBeat+window){
+        const double playX=notationLeft+(cursorBeat-startBeat)*scale;
         // Keep the playhead within the musical grand-staff band. The top and
         // bottom fingering guides sit outside this range, so the orange line
         // can no longer run through the finger number the player needs next.
@@ -706,7 +767,8 @@ void ScoreWidget::paintScore(QPainter &p,const QRectF &target) const {
         // leading D in D4 at beat zero).
         constexpr double playLineTop=124.0,playLineBottom=272.0;
         p.fillRect(QRectF(playX-2,playLineTop,4,playLineBottom-playLineTop),QColor(239,119,95,70));
-        p.setPen(QColor("#bd5945"));p.drawLine(QPointF(playX,playLineTop),QPointF(playX,playLineBottom));
+        p.setPen(QPen(QColor("#bd5945"),1.0,playbackWaiting?Qt::DashLine:Qt::SolidLine));
+        p.drawLine(QPointF(playX,playLineTop),QPointF(playX,playLineBottom));
     }
     if(m_editEnabled&&m_editCursorBeat>=startBeat&&m_editCursorBeat<=startBeat+window){
         const double editX=notationLeft+(m_editCursorBeat-startBeat)*scale;p.fillRect(QRectF(editX-2.5,48,5,190),QColor("#ef775f"));
@@ -752,8 +814,8 @@ void ScoreWidget::paintScore(QPainter &p,const QRectF &target) const {
         return duration<.82?1:0;
     };
     auto noteColor=[&](const NoteEvent &note){
-        const bool expected=qAbs(note.start-m_groupStart)<.04&&m_expected.contains(note.note);
-        const bool played=m_playedBeat>=note.start&&!expected;
+        const bool expected=m_playbackCursorVisible&&!playbackWaiting&&qAbs(note.start-m_groupStart)<.04&&m_expected.contains(note.note);
+        const bool played=!playbackWaiting&&m_playedBeat>=note.start&&!expected;
         return expected?QColor("#ef775f"):(played?QColor("#2d7d70"):QColor("#263f39"));
     };
 
@@ -925,13 +987,14 @@ void ScoreWidget::paintScore(QPainter &p,const QRectF &target) const {
     // the outermost note/stem in this viewport, then keep every fingering on
     // that same Y coordinate. Simultaneous chord fingers spread sideways.
     double trebleFingeringY=90.0,bassFingeringY=320.0;
+    double trebleNotationTop=112.0,bassNotationBottom=270.0;
     bool haveTreble=false,haveBass=false;
     for(const auto &chord:chords){
         double minY=chord.notes.first().y,maxY=minY;
         for(const auto &render:chord.notes){minY=qMin(minY,render.y);maxY=qMax(maxY,render.y);}
         if(chord.stemEndY!=0){minY=qMin(minY,chord.stemEndY);maxY=qMax(maxY,chord.stemEndY);}
-        if(chord.hand==Hand::Right){const double candidate=minY-18.0;trebleFingeringY=haveTreble?qMin(trebleFingeringY,candidate):candidate;haveTreble=true;}
-        else{const double candidate=maxY+28.0;bassFingeringY=haveBass?qMax(bassFingeringY,candidate):candidate;haveBass=true;}
+        if(chord.hand==Hand::Right){const double candidate=minY-18.0;trebleFingeringY=haveTreble?qMin(trebleFingeringY,candidate):candidate;trebleNotationTop=haveTreble?qMin(trebleNotationTop,minY):minY;haveTreble=true;}
+        else{const double candidate=maxY+28.0;bassFingeringY=haveBass?qMax(bassFingeringY,candidate):candidate;bassNotationBottom=haveBass?qMax(bassNotationBottom,maxY):maxY;haveBass=true;}
     }
     // Measure labels occupy the lane immediately above the treble staff.
     // Keep RH fingering in its own higher lanes so a number on beat one can
@@ -946,7 +1009,11 @@ void ScoreWidget::paintScore(QPainter &p,const QRectF &target) const {
     // treble staff, bass names below the bass staff. Chord names form a
     // vertical stack while retaining pitch order. Push fingering farther out
     // when both aids are enabled so neither row can merge with the other.
-    constexpr double trebleNameY=112.0,bassNameY=288.0;
+    // Preserve the teaching order around the real notation bounds:
+    // RH finger -> name -> note, and LH note -> name -> finger. Fixed name
+    // rows collided with the second-ledger-line C used by low 8vb passages.
+    const double trebleNameY=haveTreble?qMin(112.0,trebleNotationTop-14.0):112.0;
+    const double bassNameY=haveBass?qMax(288.0,bassNotationBottom+18.0):288.0;
     int trebleNameStack=1,bassNameStack=1;
     if(m_showNames)for(const auto &chord:chords){const int count=chord.notes.size();if(chord.hand==Hand::Right)trebleNameStack=qMax(trebleNameStack,count);else bassNameStack=qMax(bassNameStack,count);}
     if(m_showNames&&m_showFingering){trebleFingeringY=qMin(trebleFingeringY,trebleNameY-trebleNameStack*17.0-8.0);bassFingeringY=qMax(bassFingeringY,bassNameY+bassNameStack*17.0+8.0);}
@@ -1116,8 +1183,8 @@ void ScoreWidget::paintScore(QPainter &p,const QRectF &target) const {
             }
             previousBeat=stop;
         }
-        if(showSustainTie&&followed>=note.start&&followed<end&&followed>=startBeat&&followed<=startBeat+window){
-            const double activeX=notationLeft+(followed-startBeat)*scale;
+        if(m_playbackCursorVisible&&!playbackWaiting&&showSustainTie&&cursorBeat>=note.start&&cursorBeat<end&&cursorBeat>=startBeat&&cursorBeat<=startBeat+window){
+            const double activeX=notationLeft+(cursorBeat-startBeat)*scale;
             p.setPen(QPen(QColor("#bd5945"),1.3));p.setBrush(QColor("#ef775f"));p.drawEllipse(QPointF(activeX,render.y),3.8,3.8);
         }
     }
@@ -1126,14 +1193,26 @@ void ScoreWidget::paintScore(QPainter &p,const QRectF &target) const {
     // can make the spelling unreadable.
     QHash<const NoteEvent*,QRectF> nameLabels;
     if(m_showNames){
-        for(const auto &chord:chords){
+        QHash<int,double> nameColumns;
+        for(Hand hand:{Hand::Left,Hand::Right}){
+            QVector<int> indexes;for(int index=0;index<chords.size();++index)if(chords[index].hand==hand)indexes<<index;
+            for(int first=0;first<indexes.size();){
+                int end=first+1;while(end<indexes.size()&&chords[indexes[end]].x-chords[indexes[end-1]].x<34.0)++end;
+                const int count=end-first;constexpr double gap=32.0;const double width=gap*qMax(0,count-1);
+                const double centre=(chords[indexes[first]].x+chords[indexes[end-1]].x)*.5;
+                const double left=qBound(notationLeft+16.0,centre-width*.5,musicRight-16.0-width);
+                for(int offset=0;offset<count;++offset)nameColumns.insert(indexes[first+offset],left+offset*gap);
+                first=end;
+            }
+        }
+        for(int chordIndex=0;chordIndex<chords.size();++chordIndex){const auto &chord=chords[chordIndex];
             QVector<const RenderNote*> ordered;for(const auto &render:chord.notes)ordered.append(&render);
             std::sort(ordered.begin(),ordered.end(),[](const auto *a,const auto *b){return a->y<b->y;});
             double width=26.0;for(const auto *render:ordered){const QString name=staffPitchName(*render->event,fifthsAt(m_keySignatures,render->event->start));width=qMax(width,8.0+name.size()*6.0);}
             // Beat zero has a dedicated lesson lead-in before it. Use that
             // space to centre the first name bubble over its note instead of
             // pinning the bubble's left edge to the orange playhead.
-            const double labelX=qBound(musicLeft+2.0,chord.x-width*.5,musicRight-width);
+            const double labelX=qBound(musicLeft+2.0,nameColumns.value(chordIndex,chord.x)-width*.5,musicRight-width);
             for(int index=0;index<ordered.size();++index){const double center=chord.hand==Hand::Right?trebleNameY-(ordered.size()-1-index)*17.0:bassNameY+index*17.0;nameLabels.insert(ordered[index]->event,QRectF(labelX,center-8,width,16));}
         }
     }
@@ -1143,7 +1222,18 @@ void ScoreWidget::paintScore(QPainter &p,const QRectF &target) const {
         const auto &note=*render.event;const double x=render.headX,y=render.y;const QColor color=render.color;
         AccidentalMark accidental=note.accidental;
         if(accidental==AccidentalMark::Automatic)accidental=automaticAccidental(note.note,fifthsAt(m_keySignatures,note.start));
-        if(accidental!=AccidentalMark::Automatic){const QString symbol=accidental==AccidentalMark::Natural?QString::fromUtf8("♮"):accidental==AccidentalMark::Sharp?QString::fromUtf8("♯"):accidental==AccidentalMark::Flat?QString::fromUtf8("♭"):accidental==AccidentalMark::DoubleSharp?QString::fromUtf8("𝄪"):QString::fromUtf8("𝄫");p.setPen(color);p.setFont(QFont("Noto Music",20));p.drawText(QRectF(x-31,y-17,20,34),Qt::AlignCenter,symbol);}
+        if(accidental!=AccidentalMark::Automatic){
+            const QString symbol=accidental==AccidentalMark::Natural?QString::fromUtf8("♮"):accidental==AccidentalMark::Sharp?QString::fromUtf8("♯"):accidental==AccidentalMark::Flat?QString::fromUtf8("♭"):accidental==AccidentalMark::DoubleSharp?QString::fromUtf8("𝄪"):QString::fromUtf8("𝄫");
+            QFont accidentalFont("Noto Music",22);if(!QFontInfo(accidentalFont).exactMatch())accidentalFont=QFont("serif",22);
+            QPainterPath glyph;glyph.addText(QPointF(0,0),accidentalFont,symbol);const QRectF bounds=glyph.boundingRect();
+            QTransform placement;placement.translate(x-22.0-bounds.center().x(),y-bounds.center().y());glyph=placement.map(glyph);
+            // Fast Free Play attacks can leave less than one glyph of space
+            // between consecutive noteheads. A slim paper-coloured keyline
+            // separates the accidental from the preceding head, beam, ledger
+            // line, or staff line without hiding the surrounding notation.
+            p.setPen(QPen(QColor("#fffefa"),3.0,Qt::SolidLine,Qt::RoundCap,Qt::RoundJoin));p.setBrush(color);p.drawPath(glyph);
+            p.setPen(Qt::NoPen);p.setBrush(color);p.drawPath(glyph);
+        }
         const bool openHead=note.duration>=1.75;
         p.save();p.translate(x,y);p.rotate(-18);p.setPen(openHead?QPen(color,2.3):Qt::NoPen);p.setBrush(openHead?QColor("#fffefa"):color);p.drawEllipse(QRectF(-9,-6,18,12));p.restore();
         // Playback uses a small release gap (for example, a written quarter
@@ -1185,7 +1275,7 @@ void ScoreWidget::mousePressEvent(QMouseEvent *event){
     const QPointF canvasPoint=widgetToCanvas(event->position());const double x=canvasPoint.x(),y=canvasPoint.y();
     const auto range=viewRange();const double startBeat=range.first,window=range.second;
     const double musicLeft=225.0+qAbs(fifthsAt(m_keySignatures,startBeat))*8.0;
-    const double notationLeft=musicLeft+(m_lessonOpeningInset?24.0:0.0),musicRight=1000.0,scale=(musicRight-notationLeft)/window;
+    const double notationLeft=musicLeft+((m_lessonOpeningInset||m_liveWriting)?24.0:0.0),musicRight=1000.0,scale=(musicRight-notationLeft)/window;
     if(!m_editEnabled&&m_seekEnabled&&event->button()==Qt::LeftButton&&x>=notationLeft&&x<=musicRight){
         m_seekDragging=true;m_seekRangeStart=startBeat;m_seekRangeWindow=window;
         m_seekPreviewBeat=qMax(0.0,qRound((startBeat+(x-notationLeft)/scale)*8.0)/8.0);
@@ -1211,7 +1301,7 @@ void ScoreWidget::mouseDoubleClickEvent(QMouseEvent *event){
     const double x=widgetToCanvas(event->position()).x();
     const double startBeat=viewRange().first;
     const double musicLeft=225.0+qAbs(fifthsAt(m_keySignatures,startBeat))*8.0;
-    const double notationLeft=musicLeft+(m_lessonOpeningInset?24.0:0.0),musicRight=1000.0;
+    const double notationLeft=musicLeft+((m_lessonOpeningInset||m_liveWriting)?24.0:0.0),musicRight=1000.0;
     if(x<notationLeft||x>musicRight){QWidget::mouseDoubleClickEvent(event);return;}
     m_seekDragging=false;m_seekPreviewBeat=-1;update();
     emit measureDrillCancelRequested();
@@ -1222,7 +1312,7 @@ void ScoreWidget::mouseMoveEvent(QMouseEvent *event){
     if(!m_seekDragging||!(event->buttons()&Qt::LeftButton)){QWidget::mouseMoveEvent(event);return;}
     const double x=widgetToCanvas(event->position()).x();
     const double musicLeft=225.0+qAbs(fifthsAt(m_keySignatures,m_seekRangeStart))*8.0;
-    const double notationLeft=musicLeft+(m_lessonOpeningInset?24.0:0.0),musicRight=1000.0;
+    const double notationLeft=musicLeft+((m_lessonOpeningInset||m_liveWriting)?24.0:0.0),musicRight=1000.0;
     const double scale=(musicRight-notationLeft)/m_seekRangeWindow;
     m_seekPreviewBeat=qMax(0.0,qRound((m_seekRangeStart+(qBound(notationLeft,x,musicRight)-notationLeft)/scale)*8.0)/8.0);
     update();emit seekPreviewChanged(m_seekPreviewBeat);event->accept();
@@ -1241,10 +1331,10 @@ void ScoreWidget::wheelEvent(QWheelEvent *event){
     QWidget::wheelEvent(event);
 }
 
-PianoWidget::PianoWidget(QWidget *parent):QWidget(parent){setMinimumHeight(130);setMouseTracking(true);setFocusPolicy(Qt::StrongFocus);}
+PianoWidget::PianoWidget(QWidget *parent):QWidget(parent){setAttribute(Qt::WA_OpaquePaintEvent);setMinimumHeight(130);setMouseTracking(true);setFocusPolicy(Qt::StrongFocus);}
 QRectF PianoWidget::noteRect(int note) const {int whites=0;const double ww=width()/52.0;for(int n=21;n<=note;++n)if(!blackKey(n))++whites;if(blackKey(note))return QRectF((whites-.34)*ww,0,ww*.68,height()*.62);return QRectF((whites-1)*ww,0,ww,height());}
 int PianoWidget::noteAt(const QPointF&p)const{for(int n=21;n<=108;++n)if(blackKey(n)&&noteRect(n).contains(p))return n;for(int n=21;n<=108;++n)if(!blackKey(n)&&noteRect(n).contains(p))return n;return-1;}
-void PianoWidget::setActive(int n,bool a){if(a)m_active.insert(n);else m_active.remove(n);if(n>=21&&n<=108)update(noteRect(n).adjusted(-5,-5,5,5).toRect());}
+void PianoWidget::setActive(int n,bool a){if(m_active.contains(n)==a)return;if(a)m_active.insert(n);else m_active.remove(n);if(n>=21&&n<=108)update(noteRect(n).adjusted(-5,-5,5,5).toRect());}
 void PianoWidget::setFingerHints(const QHash<int,int>&hints){if(m_fingerHints==hints)return;m_fingerHints=hints;update();}
 void PianoWidget::setKeyRange(int low,int high){low=qBound(21,low,108);high=qBound(low,high,108);if(m_low==low&&m_high==high)return;m_low=low;m_high=high;update();}
 void PianoWidget::paintEvent(QPaintEvent*){QPainter p(this);p.setRenderHint(QPainter::Antialiasing);p.fillRect(rect(),QColor("#20332f"));auto draw=[&](bool black){for(int n=21;n<=108;++n){if(blackKey(n)!=black)continue;const bool inactive=n<m_low||n>m_high;QRectF r=noteRect(n).adjusted(1,0,-1,-2);QPainterPath path;path.addRoundedRect(r,black?3:4,black?3:4);if(m_active.contains(n))p.fillPath(path,QColor(black?"#ef775f":"#9ee0d0"));else if(inactive)p.fillPath(path,QColor(black?"#303633":"#aeb2ae"));else{QLinearGradient g(r.topLeft(),r.bottomLeft());if(black){g.setColorAt(0,QColor("#2d3c38"));g.setColorAt(1,QColor("#07110f"));}else{g.setColorAt(0,Qt::white);g.setColorAt(1,QColor("#e0dfd7"));}p.fillPath(path,g);}p.setPen(QPen(QColor(inactive?"#747b77":black?"#07110f":"#adb5b2"),1));p.drawPath(path);if(!black&&n%12==0){p.setPen(QColor(inactive?"#757c78":"#8a9692"));p.setFont(QFont("DM Mono",7));p.drawText(r.adjusted(0,0,0,-7),Qt::AlignHCenter|Qt::AlignBottom,MusicDocument::noteName(n));}}};draw(false);draw(true);
@@ -1260,10 +1350,10 @@ void PianoWidget::mouseMoveEvent(QMouseEvent*e){if(!(e->buttons()&Qt::LeftButton
 void PianoWidget::mouseReleaseEvent(QMouseEvent*){if(m_mouseNote>=0)emit noteReleased(m_mouseNote);m_mouseNote=-1;}
 void PianoWidget::leaveEvent(QEvent*){if(m_mouseNote>=0){emit noteReleased(m_mouseNote);m_mouseNote=-1;}}
 
-BubbleWidget::BubbleWidget(QWidget *parent):QWidget(parent){setMinimumHeight(185);m_clock.start();m_timer.setInterval(16);connect(&m_timer,&QTimer::timeout,this,qOverload<>(&QWidget::update));m_timer.start();}
-void BubbleWidget::setNotes(const QVector<NoteEvent>&n){m_notes=n;update();}void BubbleWidget::setPlayhead(double b){m_playhead=b;update();}void BubbleWidget::setExpected(const QSet<int>&n,double s){m_expected=n;m_groupStart=s;update();}void BubbleWidget::setBubblesVisible(bool v){m_showBubbles=v;update();}void BubbleWidget::setWaitMode(bool waiting){m_waitMode=waiting;update();}void BubbleWidget::setHandFilter(int f){m_handFilter=f;update();}void BubbleWidget::pulseNote(int n){m_pulses<<Pulse{n,m_clock.elapsed()};update();}
+BubbleWidget::BubbleWidget(QWidget *parent):QWidget(parent){setAttribute(Qt::WA_OpaquePaintEvent);setMinimumHeight(185);m_clock.start();m_timer.setInterval(16);connect(&m_timer,&QTimer::timeout,this,qOverload<>(&QWidget::update));m_timer.start();}
+void BubbleWidget::setNotes(const QVector<NoteEvent>&n){m_notes=n;update();}void BubbleWidget::setPlayhead(double b){m_playhead=b;update();}void BubbleWidget::setExpected(const QSet<int>&n,double s){m_expected=n;m_groupStart=s;update();}void BubbleWidget::setBubblesVisible(bool v){m_showBubbles=v;update();}void BubbleWidget::setTimelineVisible(bool v){if(m_timelineVisible==v)return;m_timelineVisible=v;update();}void BubbleWidget::setWaitMode(bool waiting){m_waitMode=waiting;update();}void BubbleWidget::setHandFilter(int f){m_handFilter=f;update();}void BubbleWidget::pulseNote(int n){m_pulses<<Pulse{n,m_clock.elapsed()};update();}
 void BubbleWidget::resetState(){m_pulses.clear();m_expected.clear();m_playhead=0;m_groupStart=0;update();}
 void BubbleWidget::paintEvent(QPaintEvent*){QPainter p(this);p.setRenderHint(QPainter::Antialiasing);QLinearGradient bg(0,0,0,height());bg.setColorAt(0,QColor("#17342e"));bg.setColorAt(1,QColor("#102721"));p.fillRect(rect(),bg);int low=21,high=108;auto xFor=[&](int n){return (n-low+.5)*width()/double(high-low+1);};p.setPen(QPen(QColor(255,255,255,12),1));for(int n=low;n<=high;++n)if(n%12==0)p.drawLine(QPointF(xFor(n),0),QPointF(xFor(n),height()));double strike=height()-23;p.setPen(QPen(QColor("#66c4ae"),1));p.drawLine(QPointF(0,strike),QPointF(width(),strike));
-    if(m_showBubbles){for(const auto&n:m_notes){if(!included(n,m_handFilter))continue;double reference=m_playhead;constexpr double pixelsPerBeat=42.0;double y=strike-(n.start-reference)*pixelsPerBeat;double w=qMax(12.0,width()/92.0),h=qMax(15.0,n.duration*pixelsPerBeat);if(y<-40||y-h>height()+30)continue;bool ex=m_waitMode&&qAbs(n.start-m_groupStart)<.01&&m_expected.contains(n.note);QColor c=ex?QColor("#ef775f"):QColor(n.hand==Hand::Left?"#86aebd":"#77cbb8");QRectF r(xFor(n.note)-w/2,y-h,w,h);p.setPen(Qt::NoPen);p.setBrush(c);p.drawRoundedRect(r,w/2,w/2);if(ex){p.setBrush(QColor(239,119,95,38));p.drawEllipse(QPointF(xFor(n.note),strike),15,15);}}}
+    if(m_showBubbles&&m_timelineVisible){for(const auto&n:m_notes){if(!included(n,m_handFilter))continue;double reference=m_playhead;constexpr double pixelsPerBeat=42.0;double y=strike-(n.start-reference)*pixelsPerBeat;double w=qMax(12.0,width()/92.0),h=qMax(15.0,n.duration*pixelsPerBeat);if(y<-40||y-h>height()+30)continue;bool ex=m_waitMode&&qAbs(n.start-m_groupStart)<.01&&m_expected.contains(n.note);QColor c=ex?QColor("#ef775f"):QColor(n.hand==Hand::Left?"#86aebd":"#77cbb8");QRectF r(xFor(n.note)-w/2,y-h,w,h);p.setPen(Qt::NoPen);p.setBrush(c);p.drawRoundedRect(r,w/2,w/2);if(ex){p.setBrush(QColor(239,119,95,38));p.drawEllipse(QPointF(xFor(n.note),strike),15,15);}}}
     qint64 now=m_clock.elapsed();m_pulses.erase(std::remove_if(m_pulses.begin(),m_pulses.end(),[&](const Pulse&a){return now-a.born>700;}),m_pulses.end());for(const auto&a:m_pulses){double age=(now-a.born)/700.0;p.setPen(QPen(QColor(111,220,193,int(200*(1-age))),2));p.setBrush(Qt::NoBrush);p.drawEllipse(QPointF(xFor(a.note),strike),8+age*22,8+age*22);}
 }

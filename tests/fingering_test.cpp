@@ -174,7 +174,7 @@ int main(int argc,char **argv){
     ok&=check(compactFrame.recommendedFrameHeight()==212,"single-note fingering keeps the compact score frame");
     ScoreWidget dyadFrame;dyadFrame.setNotes({{48,0,2,80,Hand::Left},{55,0,2,80,Hand::Left}});dyadFrame.setShowFingering(true);
     ScoreWidget largeChordFrame;largeChordFrame.setNotes({{48,0,2,80,Hand::Left},{52,0,2,80,Hand::Left},{55,0,2,80,Hand::Left},{60,0,2,80,Hand::Left}});largeChordFrame.setShowFingering(true);
-    ok&=check(dyadFrame.recommendedFrameHeight()>212&&largeChordFrame.recommendedFrameHeight()==dyadFrame.recommendedFrameHeight(),"vertical chord fingering exposes the complete safe canvas without clipping either edge");
+    ok&=check(dyadFrame.recommendedFrameHeight()>212&&largeChordFrame.recommendedFrameHeight()>dyadFrame.recommendedFrameHeight(),"vertical chord fingering grows with its actual stack instead of clipping either edge");
     largeChordFrame.setShowFingering(false);ok&=check(largeChordFrame.recommendedFrameHeight()==212,"hiding fingering restores the compact score frame");
 
     QVector<NoteEvent> rightDyadContext{{60,0,.45,88,Hand::Right},{67,0,.45,88,Hand::Right},
@@ -275,6 +275,158 @@ int main(int argc,char **argv){
     anchoredDrill.setFollowBeat(8.0);
     ok&=check(qAbs(anchoredDrill.viewStartBeat()-8.0)<.001,
               "normal score following resumes after practice leaves the anchored page");
+
+    ScoreWidget octaveFrame;
+    octaveFrame.setNotes({{22,0.0,.25,90,Hand::Left},{106,.5,.25,90,Hand::Right}});
+    ok&=check(octaveFrame.recommendedFrameHeight()>212,
+              "extreme Free Play notes expand the compact frame enough to retain octave notation");
+
+    QVector<NoteEvent> denseMeasure;
+    for(int index=0;index<16;++index)denseMeasure.append({60+(index%5),index*.25,.20,90,Hand::Right});
+    ScoreWidget densityPage;densityPage.resize(1100,440);densityPage.setTimeSignatures({{0.0,4,4}});densityPage.setNotes(denseMeasure);densityPage.setFollowBeat(0);
+    ok&=check(qAbs(densityPage.viewWindowBeats()-4.0)<.001,
+              "a dense measure receives the full score width instead of compressing two measures into illegibility");
+    ScoreWidget sparsePage;sparsePage.resize(1100,440);sparsePage.setTimeSignatures({{0.0,4,4}});sparsePage.setNotes({{60,0,1,90,Hand::Right},{64,4,1,90,Hand::Right}});sparsePage.setFollowBeat(0);
+    ok&=check(qAbs(sparsePage.viewWindowBeats()-8.0)<.001,
+              "sparse music continues to fill the panel with multiple measures");
+
+    auto renderScore=[](ScoreWidget &score){
+        QImage image(1100,440,QImage::Format_ARGB32_Premultiplied);
+        image.fill(Qt::transparent);
+        QPainter painter(&image);score.paintScore(painter,QRectF(0,0,1100,440));painter.end();
+        return image;
+    };
+    auto checkOpaquePainting=[&](QWidget &widget,const char *name){
+        const bool opaqueByDefault=widget.testAttribute(Qt::WA_OpaquePaintEvent);
+        auto renderWidget=[&]{
+            QImage image(widget.size(),QImage::Format_ARGB32_Premultiplied);
+            image.fill(Qt::transparent);widget.render(&image);return image;
+        };
+        const QImage opaqueImage=renderWidget();
+        widget.setAttribute(Qt::WA_OpaquePaintEvent,false);
+        const QImage ordinaryImage=renderWidget();
+        widget.setAttribute(Qt::WA_OpaquePaintEvent,opaqueByDefault);
+        bool allPixelsOpaque=true;
+        for(int y=0;y<opaqueImage.height()&&allPixelsOpaque;++y)
+            for(int x=0;x<opaqueImage.width();++x)
+                if(qAlpha(opaqueImage.pixel(x,y))!=255
+                        ||qAlpha(ordinaryImage.pixel(x,y))!=255){allPixelsOpaque=false;break;}
+        if(!opaqueByDefault||opaqueImage!=ordinaryImage||!allPixelsOpaque)
+            std::cerr<<"OPAQUE WIDGET: "<<name<<'\n';
+        ok&=check(opaqueByDefault,"each fully painted music widget enables opaque repaint optimization by default");
+        ok&=check(opaqueImage==ordinaryImage,"opaque repaint optimization does not change any rendered music-widget pixels");
+        ok&=check(allPixelsOpaque,"each music widget completely fills its rectangle with opaque pixels");
+    };
+    ScoreWidget opaqueScore;opaqueScore.resize(1100,440);
+    const QVector<NoteEvent> opaqueNotes{{48,0,1,90,Hand::Left},
+                                         {60,0,1,90,Hand::Right},
+                                         {61,1,.5,90,Hand::Right}};
+    opaqueScore.setNotes(opaqueNotes);opaqueScore.setShowNames(true);
+    opaqueScore.setShowFingering(true);opaqueScore.setExpected({48,60},0.0);
+    checkOpaquePainting(opaqueScore,"score");
+    PianoWidget opaquePiano;opaquePiano.resize(1100,168);
+    opaquePiano.setKeyRange(36,96);opaquePiano.setActive(60,true);
+    opaquePiano.setActive(61,true);opaquePiano.setFingerHints({{60,1},{61,2},{67,5}});
+    checkOpaquePainting(opaquePiano,"keyboard");
+    BubbleWidget opaqueBubbles;opaqueBubbles.resize(1100,185);
+    opaqueBubbles.setNotes(opaqueNotes);opaqueBubbles.setPlayhead(.5);
+    opaqueBubbles.setExpected({48,60},0.0);
+    // No pulses are introduced, so both real widget paints have identical
+    // static contents even though the bubble widget owns an animation timer.
+    checkOpaquePainting(opaqueBubbles,"bubbles");
+
+    ScoreWidget cursorVisibility;cursorVisibility.resize(1100,440);
+    cursorVisibility.setNotes({{60,0,1,90,Hand::Right},{64,4,1,90,Hand::Right}});
+    cursorVisibility.setFollowBeat(1.0);
+    const QImage cursorShown=renderScore(cursorVisibility);
+    cursorVisibility.setPlaybackCursorVisible(false);
+    const QImage cursorHidden=renderScore(cursorVisibility);
+    cursorVisibility.setPlaybackCursorVisible(true);
+    const QImage cursorRestored=renderScore(cursorVisibility);
+    int cursorChangedPixels=0;
+    for(int y=0;y<cursorShown.height();++y)for(int x=0;x<cursorShown.width();++x)
+        if(cursorShown.pixel(x,y)!=cursorHidden.pixel(x,y))++cursorChangedPixels;
+    ok&=check(cursorChangedPixels>100,
+              "the explicit cursor visibility control can intentionally hide the playback line");
+    ok&=check(cursorShown==cursorRestored,
+              "the orange playback cursor returns at the identical score position once output is ready");
+
+    auto cursorDifference=[](const QImage &shown,const QImage &hidden){
+        qint64 pixels=0,sumX=0;
+        for(int y=0;y<shown.height();++y)for(int x=0;x<shown.width();++x)
+            if(shown.pixel(x,y)!=hidden.pixel(x,y)){++pixels;sumX+=x;}
+        return qMakePair(pixels,pixels?double(sumX)/pixels:-1.0);
+    };
+    ScoreWidget preparingCursor;preparingCursor.resize(1100,440);
+    preparingCursor.setNotes({{60,0,2,90,Hand::Right},{48,0,2,90,Hand::Left},
+                              {64,4,2,90,Hand::Right}});
+    preparingCursor.setFollowBeat(0.0);preparingCursor.setPlayedBeat(-1);
+    preparingCursor.setExpected({60,48},0.0);
+    preparingCursor.setPlaybackWaiting(0.0);
+    const QImage preparingAtStart=renderScore(preparingCursor);
+    preparingCursor.setExpected({},0.0);
+    ok&=check(preparingAtStart==renderScore(preparingCursor),
+              "a parked startup cursor does not mark the first note or chord expected before audio begins");
+    preparingCursor.setPlayedBeat(5.0);
+    ok&=check(preparingAtStart==renderScore(preparingCursor),
+              "the preparing cursor neither follows a stale played beat nor prematurely marks notes played");
+    preparingCursor.setPlayedBeat(-1);
+    preparingCursor.setPlaybackCursorVisible(false);
+    const auto preparingStartLine=cursorDifference(preparingAtStart,renderScore(preparingCursor));
+    ok&=check(preparingStartLine.first>50,
+              "the orange cursor remains visibly parked at the beginning throughout audio priming");
+    preparingCursor.setPlaybackCursorVisible(true);
+    preparingCursor.setFollowBeat(1.0);
+    ok&=check(preparingAtStart==renderScore(preparingCursor),
+              "history anchoring cannot move the parked startup cursor away from its requested start");
+
+    preparingCursor.setFollowBeat(4.0);
+    preparingCursor.setPlaybackWaiting(4.25);
+    const QImage preparingAtResume=renderScore(preparingCursor);
+    preparingCursor.setFollowBeat(5.0);
+    ok&=check(preparingAtResume==renderScore(preparingCursor),
+              "a nonzero resume or tempo-change target stays parked while the audio output is primed");
+    preparingCursor.setPlaybackCursorVisible(false);
+    const auto preparingResumeLine=cursorDifference(preparingAtResume,renderScore(preparingCursor));
+    ok&=check(preparingResumeLine.first>50,
+              "the preparing cursor remains visible at a nonzero requested playback position");
+    preparingCursor.setPlaybackCursorVisible(true);
+    preparingCursor.setPlayedBeat(4.25);
+    preparingCursor.setPlaybackWaiting(-1);
+    const QImage resumedAtOutputBeat=renderScore(preparingCursor);
+    preparingCursor.setPlaybackCursorVisible(false);
+    const auto resumedLine=cursorDifference(resumedAtOutputBeat,renderScore(preparingCursor));
+    ok&=check(resumedLine.first>100&&qAbs(preparingResumeLine.second-resumedLine.second)<1.0,
+              "the first ready output frame changes the parked line to active without shifting its beat");
+    preparingCursor.setPlaybackCursorVisible(true);
+    preparingCursor.setPlayedBeat(-1);preparingCursor.setFollowBeat(0.0);
+    preparingCursor.setPlaybackWaiting(0.0);
+    preparingCursor.setPedalEvents({{0.0,true},{2.0,false}});
+    preparingCursor.setExpectedPedal(1,0.0);
+    const QImage preparingPedal=renderScore(preparingCursor);
+    preparingCursor.setExpectedPedal(-1,-1);
+    ok&=check(preparingPedal==renderScore(preparingCursor),
+              "preparing playback does not show a pedal press as currently due before output begins");
+    preparingCursor.setPedalEvents({});
+    preparingCursor.setExpected({60,48},0.0);
+    const QImage waitingFirstChord=renderScore(preparingCursor);
+    preparingCursor.setPlaybackWaiting(-1);
+    ok&=check(waitingFirstChord!=renderScore(preparingCursor),
+              "note highlighting is restored when the shared output clock actually starts");
+
+    ScoreWidget audioClockCursor;audioClockCursor.resize(1100,440);
+    audioClockCursor.setTimeSignatures({{0.0,4,4}});
+    audioClockCursor.setNotes({{60,0,1,90,Hand::Right},{64,4,1,90,Hand::Right}});
+    audioClockCursor.setPlayedBeat(2.0);audioClockCursor.setFollowBeat(0.0);
+    const QImage cursorAtAudioBeat=renderScore(audioClockCursor);
+    audioClockCursor.setFollowBeat(1.0);
+    ok&=check(cursorAtAudioBeat==renderScore(audioClockCursor),
+              "scroll-history anchoring cannot move the orange cursor away from the audio-clock beat");
+
+    ScoreWidget stackedFrame;stackedFrame.setShowNames(true);stackedFrame.setShowFingering(true);
+    stackedFrame.setNotes({{96,0,.5,90,Hand::Right,AccidentalMark::Automatic,1},{100,0,.5,90,Hand::Right,AccidentalMark::Automatic,3},{103,0,.5,90,Hand::Right,AccidentalMark::Automatic,5}});
+    ok&=check(stackedFrame.recommendedFrameHeight()>313,
+              "stacked treble fingering reserves canvas above zero instead of clipping its top digits");
 
     // An optional visual artifact exercises the default 61-key physical range
     // within the full 88-key renderer. Outer keys remain visible but inactive;
